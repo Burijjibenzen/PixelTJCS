@@ -1,0 +1,23 @@
+{
+ "_说明": "房间人工修正文件。extra_walls=虚拟墙格子[px坐标x,y]，用于封闭宽门洞(留2格空隙当门)；renames=区域改名/改类型(room|corridor|stairwell)。改完重跑 tools/extract_map_data.py 即可。坐标看 _region_preview.txt 对齐。",
+ "extra_walls": [
+  [25, 40], [26, 40], [27, 40],
+  [51, 40], [52, 40], [53, 40], [56, 40], [57, 40], [58, 40],
+  [101, 40], [102, 40], [103, 40], [106, 40], [107, 40], [108, 40], [109, 40]
+ ],
+ "renames": {
+  "R01": {"name": "走廊与开放区", "type": "corridor"},
+  "R02": {"name": "机房B(待定)", "type": "room"},
+  "R03": {"name": "J3实验室(待定)", "type": "room"},
+  "R04": {"name": "右侧楼道(竖向通道)", "type": "corridor"},
+  "R05": {"name": "机房C(待定)", "type": "room"},
+  "R06": {"name": "左下开放区(待定)", "type": "room"},
+  "R07": {"name": "茶水间(待定)", "type": "room"},
+  "R08": {"name": "楼梯间南段", "type": "room"},
+  "R09": {"name": "中部小间(待定)", "type": "room"},
+  "R10": {"name": "楼道门厅(待定)", "type": "room"},
+  "R11": {"name": "楼梯间北段", "type": "room"},
+  "R12": {"name": "小隔间(待定)", "type": "room"},
+  "R13": {"name": "楼梯间西口", "type": "room"}
+ }
+}

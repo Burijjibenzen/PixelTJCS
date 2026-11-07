@@ -1,0 +1,18 @@
+[gd_scene format=3 uid="uid://map"]
+
+[ext_resource type="PackedScene" uid="uid://cVG2UDg3ETM" id="0_id" path="guizi_0.tscn"]
+[ext_resource type="PackedScene" uid="uid://cH8DUaIHCS2" id="1_id" path="zhuangzishangmian_1.tscn"]
+[ext_resource type="PackedScene" uid="uid://c__MoV783TJ" id="2_id" path="zhuangshi_2.tscn"]
+[ext_resource type="PackedScene" uid="uid://csxk1FIeDQz" id="3_id" path="wall_3.tscn"]
+[ext_resource type="PackedScene" uid="uid://chcfgh8E5RC" id="4_id" path="louti_4.tscn"]
+[ext_resource type="PackedScene" uid="uid://cy2l4qUdsSa" id="5_id" path="ditan_5.tscn"]
+[ext_resource type="PackedScene" uid="uid://c6J8xtwBURn" id="6_id" path="ground_6.tscn"]
+
+[node name="map" type="Node2D"]
+[node name="ground_6" parent="." instance=ExtResource("6_id")]
+[node name="ditan_5" parent="." instance=ExtResource("5_id")]
+[node name="louti_4" parent="." instance=ExtResource("4_id")]
+[node name="wall_3" parent="." instance=ExtResource("3_id")]
+[node name="zhuangshi_2" parent="." instance=ExtResource("2_id")]
+[node name="zhuangzishangmian_1" parent="." instance=ExtResource("1_id")]
+[node name="guizi_0" parent="." instance=ExtResource("0_id")]

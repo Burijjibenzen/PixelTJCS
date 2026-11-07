@@ -1,0 +1,15 @@
+# Roamchestra 后端依赖（Python 3.10+）
+# 安装: pip install -r requirements.txt
+
+# Web 框架与服务器（供 Godot 前端 / 演示脚本调用的 HTTP 接口）
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# OpenAI 官方 SDK：连接同济 AGI 网关（OpenAI 兼容协议）的唯一传输层
+openai>=1.40.0
+
+# 数据模型校验（LLM 结构化输出的 schema 定义也用它）
+pydantic>=2.7.0
+
+# 读取项目根目录的 .env 配置
+python-dotenv>=1.0.0

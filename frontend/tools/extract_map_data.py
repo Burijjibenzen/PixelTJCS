@@ -4,6 +4,9 @@
 用法:
     D:/py3.11/python.exe -X utf8 extract_map_data.py <地图目录> <输出目录>
 
+含 manifest.json 的新版地图直接按房间图层生成 grid.json。
+以下说明适用于未分房间的旧地图。
+
 输入: <地图目录>/ 下绘图工具导出的场景
     ground_6.tscn (地面, 必需), wall_3.tscn (墙, 必需),
     zhuangshi_2 / zhuangzishangmian_1 / guizi_0 / louti_4 / ditan_N (可选)
@@ -73,6 +76,13 @@ def load_overrides(path):
 
 
 def main(src_dir, out_dir):
+    from pathlib import Path
+    manifest = Path(src_dir) / "manifest.json"
+    if manifest.is_file():
+        from build_floor import load, read_godot_layers, write_navigation
+        layers = read_godot_layers(Path(src_dir))
+        write_navigation(Path(out_dir), load(manifest), layers)
+        return
     overrides = load_overrides(os.path.join(src_dir, "room_overrides.json"))
     layers = {}
     for f in os.listdir(src_dir):

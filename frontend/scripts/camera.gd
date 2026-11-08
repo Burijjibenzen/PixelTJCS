@@ -23,5 +23,15 @@ func _process(delta: float) -> void:
 		global_position = global_position.lerp(
 			target.global_position, minf(1.0, delta * 6.0))
 		return
-	var v := Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
-	global_position += v * 520.0 * delta / zoom.x
+	# 镜头平移 = 方向键 (M4 起 WASD 留给玩家实体移动)
+	var dir := Vector2.ZERO
+	if Input.is_key_pressed(KEY_LEFT):
+		dir.x -= 1.0
+	if Input.is_key_pressed(KEY_RIGHT):
+		dir.x += 1.0
+	if Input.is_key_pressed(KEY_UP):
+		dir.y -= 1.0
+	if Input.is_key_pressed(KEY_DOWN):
+		dir.y += 1.0
+	if dir != Vector2.ZERO:
+		global_position += dir.normalized() * 520.0 * delta / zoom.x

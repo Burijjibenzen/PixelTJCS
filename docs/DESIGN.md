@@ -2,7 +2,7 @@
 
 > 课程大作业：基于校园场景（纪事楼 3/4 楼、智信馆 4 楼）的 NPC 自主交互演示系统
 > 基座项目：`hello-agents-main/code/chapter15/Helloagents-AI-Town`（Godot 4 前端 + FastAPI 后端）
-> 文档版本：v0.2（2026-11-07：M1、M2.1 完成后更新 §2 处置 / §7 改造清单进度 / §10 里程碑状态）
+> 文档版本：v0.3（2026-11-08：M2.2 前端↔后端联动完成，更新 §7 第 3 条为已完成）
 
 ---
 
@@ -181,7 +181,7 @@ score = α·recency(指数衰减) + β·importance + γ·relevance(向量余弦�
 
 1. ✅（M2.1，1/3 张）纪事楼 3F：绘图工具导出真实布局，`tools/extract_map_data.py` 自动提取墙/门/区域（13 区 77 门）；其余两张楼照同一流程复制；
 2. ✅（M2.1，方案升级）区域标记不再手摆 `Area2D`，改为自动提取 `rooms.json`（含 nav_point 导航点 + door_cells 门格）；前端 `Game.room_id_at()` 任意坐标秒查所属区域，M2.3 事件上报直接用；
-3. ⏳（M2.2）后端下发目标区域 → `npc.go_to_room(rid)` A* 寻路（AStarGrid2D，与地图网格同源，替代 NavigationAgent2D）——接口 M2.1 已定型预留，接入时前端零改动；
+3. ✅（M2.2）后端 `GET /world` 下发 `target_grid`（语义区域→R## 投影，映射表 `world.py GRID_OF`，后续同学只改这张表）→ 前端 `api_client.gd` 每秒轮询，与当前目标不同才调 `npc.go_to_room(rid)` A* 寻路（AStarGrid2D）；到达 `POST /world/report` 上报真实位置（只更新事实不写记忆）；后端离线自动回退本地演示日程；
 4. ⏳（M3）对话气泡：NPC↔NPC 对话按轮次顺序交替播报；
 5. ⏳（M3）**记忆面板**（侧栏）：选 NPC → 时间线 + 强度条 + 遗忘档案 + 反思星标；
 6. ⏳（M3）关系面板：N×N 矩阵热力图或简易关系图；

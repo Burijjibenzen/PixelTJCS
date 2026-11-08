@@ -56,6 +56,12 @@ class GotoReq(BaseModel):
     area: str  # 区域 id，见 /areas
 
 
+class ReportReq(BaseModel):
+    """前端到达上报（M2.2）。grid = 前端几何区域 id（R01~R13）。"""
+    npc: str
+    grid: str
+
+
 class ChatReq(BaseModel):
     npc: str
     message: str
@@ -122,11 +128,29 @@ def advance_time(req: AdvanceReq):
 
 @app.post("/world/goto")
 def goto(req: GotoReq):
-    """把角色放到某区域（M1 传送占位，未来由前端移动事件驱动）。"""
+    """指派角色前往某区域。
+
+    M2.2 语义升级：立即就位（M1 文字演示不变）+ 记录覆盖指令——
+    Godot 前端在线时会在下次轮询收到该指派并寻路前往；
+    日程翻段时间后指派自动失效，角色回归日程。
+    """
     ok = get_service().goto(req.npc, req.area)
     if not ok:
         raise HTTPException(400, "npc 或 area 无效")
     return {"ok": True, "npc": req.npc, "area": req.area}
+
+
+@app.post("/world/report")
+def report_arrival(req: ReportReq):
+    """前端到达上报（M2.2）：只更新世界事实中的位置 + 日志。
+
+    ⚠️ 决策（已确认）：不写记忆——防 10 人移动噪音；
+    "同处一室"观察记忆由 M2.3 相遇/视野事件写入。
+    """
+    ok, msg = get_service().report_arrival(req.npc, req.grid)
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"ok": True, "npc": req.npc, "grid": req.grid, "detail": msg}
 
 
 @app.post("/chat")

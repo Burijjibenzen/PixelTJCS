@@ -27,10 +27,13 @@ copy .env.example .env       # 填入你的 API key
 python scripts/run_demo.py   # 命令行演示（答辩入口）
 uvicorn backend.api:app --port 8000   # HTTP 接口（文档在 /docs）
 
-# 5) 跑 Godot 前端（M2.1，独立运行，无需 Python/网络/key）
+# 5) 跑 Godot 前端（M2.2，可独立运行，也可接后端）
 #    ① 下载 Godot 4.5.2 stable 标准版（不是 .NET 版）: godotengine.org/download/archive/
 #    ② 双击 exe（绿色免安装）→ 项目管理器选"导入" → frontend/project.godot
 #    ③ 编辑器里按 F5 运行（详细说明与排错见 docs/CODE_GUIDE.md §7）
+#    ④ 双端联调: 终端 A 先起 uvicorn backend.api:app --port 8000，再 F5 →
+#       左上角显示"后端驱动" = NPC 按后端日程移动；
+#       后端不在线时前端自动回退本地演示日程，永不白屏
 ```
 
 ## 文档
@@ -38,6 +41,7 @@ uvicorn backend.api:app --port 8000   # HTTP 接口（文档在 /docs）
 | 文档 | 内容 |
 |---|---|
 | [docs/CODE_GUIDE.md](docs/CODE_GUIDE.md) | **交接必读**：代码结构/机制详解/扩展指南 |
+| [docs/MAP_SPEC.md](docs/MAP_SPEC.md) | 地图格式规范：现状妥协 + 理想图层约定（补画 4F/智信馆前必读） |
 | [docs/DESIGN.md](docs/DESIGN.md) | 需求与设计方案（FR/架构/里程碑） |
 | [personas/](personas/) | 10 张人格卡（7 学生 + 3 导师教务） |
 
@@ -50,8 +54,8 @@ Python 3.11 · FastAPI · SQLite（记忆/关系持久化） · 同济 AGI 网�
 ## 路线图
 
 - [x] M1: 后端完整版 —— 人格卡 + NPC↔NPC 对话 + 三因子记忆检索 + 遗忘三机制 + 关系矩阵 + HTTP API
-- [x] M2.1: Godot 前端独立运行 —— 纪事楼 3F 地图分区（13 区域）/ A* 寻路 / 10 NPC 日程移动 / F3 调试视图（当前）
-- [ ] M2.2: 前端↔后端联动 —— `/world` 驱动 NPC 移动（接口已预留）+ 进出房间/视野事件上报
+- [x] M2.1: Godot 前端独立运行 —— 纪事楼 3F 地图分区（13 区域）/ A* 寻路 / 10 NPC 日程移动 / F3 调试视图
+- [x] M2.2: 前端↔后端联动 —— `/world` 驱动 NPC 移动 + 到达位置上报 + 断线自动回退本地日程（当前）
 - [ ] M3: 调度器（相遇自动触发对话）+ 八卦传播 + 对话气泡/记忆面板/关系面板 UI
 - [ ] M4: 玩家模式（默认关闭，interrupt 开关）+ 跨楼层 + 完整演示打磨
 

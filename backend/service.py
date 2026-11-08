@@ -5,7 +5,7 @@ api.py（HTTP 接口）和 scripts/run_demo.py（命令行演示）共用本类�
 """
 
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from backend.config import MEMORY
 from backend.conversation import ConversationEngine
@@ -85,8 +85,20 @@ class GameService:
         }
 
     def goto(self, npc_name: str, area_id: str) -> bool:
-        """把角色放到某区域（未来由 Godot 移动事件替代）。"""
-        return self.world.set_area(npc_name, area_id)
+        """指派角色前往某区域（M2.2）：
+
+        - set_area: 立即就位（M1 文字演示的语义不变，prompt 位置立刻正确）
+        - assign_override: 记录覆盖指令，Godot 前端轮询到后会寻路跟随；
+          日程翻段后自动失效
+        """
+        ok = self.world.set_area(npc_name, area_id)
+        if ok:
+            self.world.assign_override(npc_name, area_id)
+        return ok
+
+    def report_arrival(self, npc_name: str, grid_id: str) -> Tuple[bool, str]:
+        """前端到达上报（M2.2）：只更新位置+日志，不写记忆（见 world.report_arrival）。"""
+        return self.world.report_arrival(npc_name, grid_id)
 
     def chat_with_npc(self, npc_name: str, message: str) -> Optional[dict]:
         """玩家 ↔ NPC 单轮对话（玩家模式的最小实现，M4 扩展）。"""

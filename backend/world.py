@@ -39,6 +39,49 @@ AREAS: Dict[str, dict] = {
     ]
 }
 
+# ----------------------------------------------------------------------
+# M2.2 语义区域 → 前端几何区域(R##) 映射表 ★后续同学只改这一张表★
+#
+# 背景: Godot 前端目前只有"纪事楼 3F"一张图（几何区域 R01~R13，见
+#   frontend/assets/map/jishilou_floor3/rooms.json，房间名可随意改，
+#   编号稳定）。而人格卡日程可能把角色派往 4F / 智信馆的语义区域。
+# 作用: 把语义区域"投影"到 3F 的对应房间，让前端永远有路可走——
+#   单楼层演示期跨楼日程照样生效；M4 接入真实多楼层地图后删除本表即可。
+# 设计原则:
+#   - 键 = AREAS 的语义 id（人格卡/日程/事件都用它，不许改）
+#   - 值 = 前端 rooms.json 的区域编号 R##（改房间名不影响映射）
+#   - 一对多允许（多个洗手间可投影到同一间），反查取表序第一个
+# ----------------------------------------------------------------------
+GRID_OF: Dict[str, str] = {
+    "j3_lab": "R03",      # 3F 实验室     → R03 J3实验室（名字直接对应）
+    "j3_pantry": "R07",   # 3F 茶水间     → R07 茶水间（名字直接对应）
+    "j3_wc": "R12",       # 3F 洗手间     → R12 小隔间（图上无明确洗手间，借用）
+    "j4_lab": "R05",      # 4F 实验室     → R05 机房C（另一间实验室）
+    "j4_meeting": "R06",  # 4F 会议室     → R06 左下开放区（最大公共区）
+    "j4_wc": "R12",       # 4F 洗手间     → R12 小隔间（与 3F 合并）
+    "zx4_yan": "R09",     # 严老师办公室  → R09 中部小间（独立小间当办公室）
+    "zx4_wen": "R10",     # 温老师办公室  → R10 楼道门厅（次独立空间）
+    "zx4_qian": "R02",    # 教务办公室    → R02 机房B（借用）
+    "zx4_hall": "R01",    # 智信馆大厅    → R01 走廊与开放区（完美对应）
+}
+DEFAULT_GRID = "R01"  # 映射缺项时的兜底投影（走廊，四通八达不会卡死）
+
+
+def grid_of(area_id: str) -> str:
+    """语义区域 id → 前端几何区域 id（R##）。缺项投影到 DEFAULT_GRID。"""
+    return GRID_OF.get(area_id, DEFAULT_GRID)
+
+
+def area_of_grid(grid_id: str) -> Optional[str]:
+    """前端几何区域 id(R##) → 语义区域 id（多对一时取表序第一个）。
+
+    返回 None 表示前端上报了映射表里没有的几何区域（非法/未投影）。
+    """
+    for aid, gid in GRID_OF.items():
+        if gid == grid_id and aid in AREAS:
+            return aid
+    return None
+
 
 @dataclass
 class GameClock:
@@ -73,6 +116,10 @@ class World:
     clock: GameClock = field(default_factory=GameClock)
     personas: Dict[str, PersonaCard] = field(default_factory=dict)
     npc_area: Dict[str, str] = field(default_factory=dict)  # {角色名: 区域id}
+    # M2.2: 显式指派(/world/goto)优先于日程；当前日程段翻篇后自动失效。
+    #   override_slot 记录"指派时所处的日程段"，用于检测翻段。
+    override_area: Dict[str, str] = field(default_factory=dict)
+    override_slot: Dict[str, str] = field(default_factory=dict)
     events: List[dict] = field(default_factory=list)  # 事件流水
     last_chat_at: Dict[Tuple[str, str], float] = field(default_factory=dict)
 
@@ -136,6 +183,54 @@ class World:
         for name, card in self.personas.items():
             self.npc_area[name] = self.schedule_area(card, self.clock.now)
 
+    # ---------------- 指派 / 目标计算（M2.2 前端联动核心） ----------------
+    def assign_override(self, name: str, area_id: str) -> None:
+        """记录显式指派（/world/goto 转发而来），优先于日程。
+
+        失效规则: 当人格卡日程翻到下一个时间段（schedule_area 结果变化），
+        指派自动作废、角色回归日程——避免"一次召见把人永久钉在办公室"。
+        """
+        if name not in self.personas or area_id not in AREAS:
+            log.error("指派无效: %s → %s", name, area_id)
+            return
+        self.override_area[name] = area_id
+        self.override_slot[name] = self.schedule_area(self.personas[name], self.clock.now)
+        log.info("🎯 %s 被指派前往 %s（日程翻段后自动失效）",
+                 name, AREAS[area_id]["name"])
+
+    def target_area(self, name: str) -> str:
+        """角色此刻应前往的区域：显式指派 > 人格卡日程（惰性计算，无后台线程）。
+
+        前端每次轮询 /world 都会取该值并换算成几何区域下发寻路，
+        因此后端不需要任何定时器——时钟推进/日程变化在下次轮询即生效。
+        """
+        ov = self.override_area.get(name)
+        if ov is not None:
+            card = self.personas[name]
+            if self.schedule_area(card, self.clock.now) != self.override_slot.get(name):
+                self.override_area.pop(name, None)
+                self.override_slot.pop(name, None)
+                log.info("⌛ %s 的指派过期，回归日程", name)
+            else:
+                return ov
+        return self.schedule_area(self.personas[name], self.clock.now)
+
+    def report_arrival(self, name: str, grid_id: str) -> Tuple[bool, str]:
+        """前端到达上报（M2.2）：几何区域 id → 语义 id，只更新位置+日志。
+
+        ⚠️ 决策（已确认）：到达**不写记忆**——10 人频繁移动会把记忆库
+        刷成噪音；"和谁同处一室"的观察记忆留给 M2.3 相遇/视野事件时写。
+        """
+        if name not in self.npc_area:
+            return False, f"未知角色: {name}"
+        if grid_of(self.npc_area[name]) == grid_id:
+            return True, "already"  # 投影相同 → 去抖，不重复刷日志
+        area_id = area_of_grid(grid_id)
+        if area_id is None:
+            return False, f"未知几何区域（不在 GRID_OF 投影内）: {grid_id}"
+        self.set_area(name, area_id)
+        return True, "moved"
+
     # ---------------- 事件 / 对话冷却 ----------------
     def inject_event(self, text: str, participants: List[str], area: str = "") -> dict:
         """注入世界事件（如"组会通知"），写入事件流水并返回事件对象。"""
@@ -165,10 +260,21 @@ class World:
 
     # ---------------- 快照（给前端 / API） ----------------
     def snapshot(self) -> dict:
+        """世界快照。M2.2 起新增 grid / target_grid 字段供 Godot 寻路：
+
+        - grid:        角色当前逻辑位置投影到前端的几何区域（R##）
+        - target_grid: 角色此刻应前往的几何区域（指派 > 日程，惰性计算）
+        旧字段（area/area_name/events）保持不变，M1 调用方零影响。
+        """
         return {
             "time": self.clock.fmt(),
             "npcs": {
-                name: {"area": area, "area_name": AREAS[area]["name"]}
+                name: {
+                    "area": area,
+                    "area_name": AREAS[area]["name"] if area in AREAS else area,
+                    "grid": grid_of(area),
+                    "target_grid": grid_of(self.target_area(name)),
+                }
                 for name, area in self.npc_area.items()
             },
             "events": self.events[-20:],  # 最近 20 条

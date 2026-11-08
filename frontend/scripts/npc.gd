@@ -8,7 +8,7 @@ signal arrived(npc)
 enum S { IDLE, WANDER, WALK }
 
 const SPEED := 55.0
-const ARRIVE_DIST := 4.0
+const ARRIVE_DIST := 2.5   # 路点提前转向半径: 必须 < 过门余量(16-8)/2=4px, 否则蹭墙角
 
 var npc_id := ""
 var npc_name := "?"
@@ -79,7 +79,13 @@ func _step_move(delta: float) -> void:
 	move_and_slide()
 	if get_slide_collision_count() > 0:
 		_stuck_time += delta
-		if _stuck_time > 0.6:          # 卡住: 以当前路点重寻路
+		if _stuck_time > 0.6 and _stuck_time <= 1.2:
+			_set_path(target)   # 卡 0.6s: 以当前路点重寻路
+		elif _stuck_time > 1.2:
+			# 仍卡(如嵌入门框/墙角): 传送回最近可走格中心再寻路
+			# (碰撞盒已缩小到 10x8, 此兜底几乎不会触发)
+			global_position = Game.world_of(
+				Game.nearest_open(Game.cell_of(global_position)))
 			_stuck_time = 0.0
 			_set_path(target)
 	else:

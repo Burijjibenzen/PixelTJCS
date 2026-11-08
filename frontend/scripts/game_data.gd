@@ -88,7 +88,11 @@ func room_id_at(world: Vector2) -> String:
 	var c := cell_of(world)
 	if c.x < 0 or c.y < 0 or c.x >= size.x or c.y >= size.y:
 		return ""
-	return _num_to_id.get(room_grid[c.y][c.x], "")
+	# ⚠️ room_grid 来自 JSON, 元素是 float; _num_to_id 键是 int。
+	# Godot 4 字典中 3.0 和 3 是不同的键, 必须显式 int() 转换后查询
+	# (此 bug 曾被 npc.gd WANDER 的 goal_room 回退掩盖, M2.2 上报时暴露)。
+	var n: int = int(room_grid[c.y][c.x])
+	return _num_to_id.get(n, "")
 
 func room_name(rid: String) -> String:
 	return rooms.get(rid, {}).get("name", rid)

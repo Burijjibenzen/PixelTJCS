@@ -2,7 +2,8 @@
 
 > 写给接手项目的同学/队友。读完本文档，你应当能独立跑通系统、看懂每个
 > 模块在干什么、并且知道往哪里加新功能。
-> 配套阅读: `docs/DESIGN.md`（需求与设计）、`README.md`（快速开始）。
+> 配套阅读: `docs/DESIGN.md`（需求与设计）、`docs/MAP_SPEC.md`（地图格式规范）、
+> `README.md`（快速开始）。
 
 ## 1. 项目一句话
 
@@ -24,7 +25,7 @@
 | 玩家↔NPC 对话（最小版） | ✅ | `POST /chat` |
 | Godot 前端独立运行（地图/寻路/移动/调试视图） | ✅ M2.1 | `frontend/`（§6/§7） |
 | NPC 自由移动 | ⚠️ 前端已有（M2.1 本地日程）；后端仍是逻辑位置 | `frontend/scripts/npc.gd` |
-| 前端↔后端联动（/world 驱动移动 + 事件上报） | ❌ M2.2（前端接口已定型预留） | 方案见 §12 第 7 条 |
+| 前端↔后端联动（/world 驱动移动 + 位置上报） | ✅ M2.2 | `frontend/scripts/api_client.gd` + `POST /world/report`（§12 第 7 条） |
 | LangGraph 编排迁移 | ❌ M3（接口已预留） | 见 §11.3 |
 
 ## 3. 快速开始
@@ -90,7 +91,8 @@ Roamchestra/
 │   └── run_demo.py       # 命令行演示（答辩入口）
 ├── frontend/             # ★ Godot 4.5 前端工程（M2.1，模块详解 §6，使用方法 §7）
 │   ├── project.godot     #   工程入口: 1280x720 · GL Compatibility 渲染 · autoload Game
-│   ├── scripts/          #   game_data(寻路+房间查询) · npc(状态机) · camera(镜头) · main(装配+日程)
+│   ├── scripts/          #   game_data(寻路+房间) · npc(状态机) · camera(镜头) · main(装配+双驱动)
+│   │                     #   api_client(后端轮询/上报/快进, M2.2) · debug_draw(区域调试层)
 │   ├── scenes/           #   main.tscn · npc.tscn · char_1~4.tres(4 套角色各 38 帧动画)
 │   ├── data/npc_roster.json  # 10 NPC: id(与后端 persona 同名)/贴图编号/出身房间/色调
 │   ├── assets/map/jishilou_floor3/  # 纪事楼3F 地图(7 层.tscn) + floor3_grid/rooms/room_overrides.json
@@ -204,9 +206,11 @@ NPC 实例（scenes/npc.tscn）。
 | 文件 | 职责 | 关键接口 |
 |---|---|---|
 | `game_data.gd`（autoload `Game`） | 地图数据+寻路+房间查询。启动时读 `floor3_grid.json`（障碍矩阵）建 **AStarGrid2D**（4 邻接/曼哈顿启发，禁对角穿缝），读 `rooms.json` 建 id→元数据 | `path_between(a, b)` 世界坐标寻路；`nav_world_of(rid)` 房间导航点；`room_id_at(world)` 坐标→房间 id；`random_world_in(rid)` 房内随机点；`room_name/type`；`is_blocked(cell)` |
-| `npc.gd`（`class_name NPC`，CharacterBody2D） | 身体：**IDLE/WANDER/WALK** 状态机，速度 55px/s；移动中被碰撞卡住 0.6s 自动以当前路点重寻路 | `setup(id, name, char_id, home, tint)` 装配；**`go_to_room(rid)` ★M2.2 后端指令直译★**；`go_to(world_pos)`；信号 `arrived(npc)` |
-| `camera.gd`（Camera2D） | 自由镜头：WASD/方向键平移（速度随缩放自适应）、滚轮缩放 0.8~5.0、空格循环跟随 NPC（lerp 平滑）、Esc 取消 | `set_target(node)` |
-| `main.gd`（main.tscn 根） | 装配：读 roster 生成 NPC；本地演示时钟（1 真实秒=60 游戏秒，左上角显示）；随机日程（每 4~7s 挑一个 NPC，50% 回家/50% 去随机房间）；**F3** 调试绘制区域框+寻路线 | `cycle_follow()` 空格跟随；`_on_npc_arrived()` 打印到达 |
+| `npc.gd`（`class_name NPC`，CharacterBody2D） | 身体：**IDLE/WANDER/WALK** 状态机，速度 55px/s；碰撞盒 8×6（小于半格，保证过 1 格门），NPC 间不互撞（collision_mask=1）；卡墙两级自救：卡 0.6s 以当前路点重寻路 → 卡 1.2s 传送回最近可走格 | `setup(id, name, char_id, home, tint)` 装配；**`go_to_room(rid)` ★M2.2 后端指令直译★**；`go_to(world_pos)`；信号 `arrived(npc)` |
+| `camera.gd`（Camera2D） | 自由镜头：**方向键**平移（速度随缩放自适应；WASD 留给 M4 玩家）、滚轮缩放 0.8~5.0、空格循环跟随 NPC（lerp 平滑）、Esc 取消 | `set_target(node)` |
+| `main.gd`（main.tscn 根） | 装配：生成 NPC + 注入 ApiClient/DebugDraw；**双驱动**（ApiClient 在线=后端日程，离线=本地演示日程，永不白屏）；右上角日程面板（0.5s 刷新"谁→去哪/已到"）；右下角快进按钮；F3/V 键轮询检测切调试视图 | `cycle_follow()` 空格跟随；`_refresh_schedule_ui()`；`_toggle_debug()` |
+| `api_client.gd`（autoload `ApiClient`） | **M2.2 后端联动**：每秒 GET `/world` → `target_grid` 与当前目标不同才 `go_to_room()`；到达上报队列（单飞行防并发）；连续 3 次失败回退本地日程、恢复自动切回；`last_world` 缓存供日程面板 | `setup(npcs)`；`report_arrival(npc)`；`advance_time(分钟)`；信号 `online_changed`/`advance_done` |
+| `debug_draw.gd`（DebugDraw 节点，位于 Actors 之后） | 区域调试视图**独立层**——必须画在地图之上（曾画在根节点，根先于子节点渲染，被瓦片完全遮挡）：半透明房间块+粗框+描边大字、门格黄标、NPC 目标线 | `set_enabled(bool)`；`setup(npcs)` |
 
 ### 6.3 数据文件
 | 文件 | 生成方式 | 内容 |
@@ -284,10 +288,11 @@ extract_map_data.py 四步原理：① `wall_3` 图层=墙本体（初版按障�
 | 按键 | 功能 |
 |---|---|
 | 滚轮 | 缩放（0.8~5 倍） |
-| WASD / 方向键 | 镜头平移（越放大移得越慢） |
+| **方向键** | 镜头平移（越放大移得越慢；**WASD 保留给 M4 玩家实体**） |
 | 空格 | 循环跟随 10 个 NPC（左上角显示跟随对象） |
 | Esc | 取消跟随 |
-| F3 | 调试视图：13 个区域框+名称+类型、黄色寻路目标线 |
+| **F3 或 V** | 调试视图：13 个区域框+名称+类型、门口黄块标记、黄色寻路目标线（部分笔记本 F 键默认是多媒体键，按 Fn+F3 或直接按 V） |
+| **快进1小时 / 快进4小时**（右下角按钮） | 游戏内时间控制：后端时钟跳进 → 日程翻段 → NPC 迁移（仅后端在线时可用；离线模式自动隐藏） |
 
 核心验收点：NPC **绕墙不穿模**、过门走门洞、F3 区域框与视觉房间吻合、跟随平滑。
 
@@ -334,14 +339,15 @@ run_demo.py
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/health` | 健康检查 |
-| GET | `/world` | 世界快照（时间/全员位置/最近事件） |
+| GET | `/world` | 世界快照（时间/全员位置/最近事件）；M2.2 起每个 NPC 含 `grid`/`target_grid`（前端寻路目标，语义区域→R## 投影） |
 | GET | `/npcs` | 角色名单（身份/性格/位置） |
 | GET | `/npcs/{name}/memory` | ★个人记忆面板: `active`/`forgotten`/`reflections` 三视图 |
 | GET | `/relations` | 全员关系矩阵（0~100，None=陌生人） |
 | GET | `/areas` | 区域地图 |
 | POST | `/conversation` | ★触发 NPC↔NPC 对话 `{a, b, trigger}` |
 | POST | `/world/advance` | ★时间推进+遗忘+反思 `{minutes}`（快进3天=4320） |
-| POST | `/world/goto` | 把角色放到某区域 `{npc, area}` |
+| POST | `/world/goto` | 指派角色前往某区域 `{npc, area}`：立即就位（M1 语义不变）+ 前端跟随，日程翻段后自动失效 |
+| POST | `/world/report` | 前端到达上报 `{npc, grid}`：只更新位置+日志，**不写记忆**（防移动噪音；同室观察记忆留给 M2.3） |
 | POST | `/chat` | 玩家↔NPC 对话 `{npc, message}`（M4 扩展基础） |
 
 前端可视化遗忘面板的数据源就是 `/npcs/{name}/memory` 的 `forgotten` 数组
@@ -421,11 +427,14 @@ fastapi/uvicorn（接口）、openai（SDK）、pydantic（校验）、python-do
 6. **玩家模式 M4**: 现有 `POST /chat` 是最小实现；扩展成玩家加入世界
    （persona 生成 + 关系初始化 + NPC 可主动找玩家 = 中断机制，届时用
    LangGraph `interrupt()`）
-7. **前端接入（M2.2，方案已定型）**: 新增 `frontend/scripts/api_client.gd`（autoload），
-   每秒 GET `/world/state` 取各 NPC 目标区域 → 调 `npc.go_to_room()`（接口已预留）；
-   到达/进出房间 POST 上报给后端 `observe()`；**后端不可达时自动回退本地演示日程**
-   （前端永不白屏）。`/npcs/{name}/memory` 拉取与 WebSocket（`/ws/events`）在 M3
-   面板阶段再加
+7. ✅ **前端接入（M2.2 已完成）**: `frontend/scripts/api_client.gd`（autoload）每秒
+   GET `/world` 取各 NPC 的 `target_grid` → 与 `npc.goal_room` 不同才调
+   `go_to_room()`（不打断行走中的人）；到达 POST `/world/report` 上报**真实位置**
+   （只更新事实不写记忆，已确认决策）；连续 3 次失败自动回退本地演示日程，
+   后端恢复后自动切回。后端侧：`world.py` 加 `GRID_OF` 映射表（语义区域→R##，
+   ★后续同学只改这张表★）+ 惰性 `target_area()`（显式指派 > 日程，指派随日程
+   翻段自动失效）+ `report_arrival()`（几何 id 反查语义 id 去抖）。
+   `/npcs/{name}/memory` 拉取与 WebSocket（`/ws/events`）在 M3 面板阶段再加
 8. **前端地图/动画再生成**: 见 §6.4 管线命令；改完用 §7.4 的命令行冒烟测试回归
 
 ## 13. 常见问题排查
@@ -444,5 +453,7 @@ fastapi/uvicorn（接口）、openai（SDK）、pydantic（校验）、python-do
 | Godot 打不开工程/弹升级提示 | 引擎版本与排错见 §7.5（"将修改为 Godot 4.7"弹窗点确认即可） |
 | Godot 运行报 SCRIPT ERROR | 看错误行的脚本名+行号；若是资源路径问题先删 `frontend/.godot/` 缓存重新导入 |
 | 前端看不到任何 NPC | 查 Output 面板是否打印 `[Main] 已生成 10 个 NPC`；没有则 `data/npc_roster.json` 路径/JSON 被改坏 |
+| 前端"已连接后端"但 NPC 不挪窝 | 后端日程没翻段：`target_grid` 按人格卡 `schedule` 时刻表**惰性**计算，时间不跨段目标不变（前端 WANDER 在房内闲逛是正常的）；可 `POST /world/advance` 快进触发翻段 |
+| room_id_at 等按数字键查字典查不到 | JSON 解析出的数字是 **float**，GDScript 字典里 `3.0` 和 `3` 是不同键——跨 JSON/代码的数字键必须显式 `int()`（M2.2 实际踩坑，详见 game_data.gd `room_id_at` 注释） |
 
 

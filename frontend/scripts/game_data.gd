@@ -1,7 +1,6 @@
 extends Node
 ## 地图数据 + 寻路网格 + 房间查询 (autoload: Game)
-## 数据源: assets/map/jishilou_floor3/floor3_grid.json + rooms.json
-## (由 tools/extract_map_data.py 从绘图工具导出的场景自动提取)
+## 建筑分区由房间地板图层指定；grid.json 只负责寻路障碍。
 
 const MAP_DIR := "res://assets/map/jishilou_floor3"
 
@@ -9,21 +8,27 @@ var tile_size: int = 16
 var origin := Vector2i.ZERO          # 地图原点格坐标
 var size := Vector2i.ZERO            # 网格宽高(格)
 var astar := AStarGrid2D.new()
-var rooms := {}                      # "R01" -> 元数据字典
-var region_cells := {}               # "R01" -> Array[Vector2i]
-var room_grid := []                  # 房间号矩阵 (int)
-var _num_to_id := {}                 # 12 -> "R12"
+var rooms := {}
+var floor_cells := {}                # 房间的全部地板，供区域显示
+var region_cells := {}               # 房间里可走的地板，供 NPC 漫步
+var _room_by_cell := {}
+var waypoint_rooms := {}             # 旧日程位置点 -> 实际所在房间
+var door_cells: Array[Vector2i] = []
 
 func _ready() -> void:
-	var grid: Dictionary = _load_json(MAP_DIR + "/floor3_grid.json")
+	var grid: Dictionary = _load_json(MAP_DIR + "/grid.json")
 	origin = Vector2i(grid.origin[0], grid.origin[1])
 	size = Vector2i(grid.size[0], grid.size[1])
 	tile_size = int(grid.tile_size)
-	room_grid = grid.room_grid
-	var rooms_data: Dictionary = _load_json(MAP_DIR + "/rooms.json")
-	for r in rooms_data.get("regions", []):
+	var manifest := _load_json(MAP_DIR + "/manifest.json")
+	for obj: Dictionary in manifest.objects:
+		if obj.type == "door":
+			for cell: Array in obj.get("passage_cells", obj.get("cells", [obj.cell])):
+				door_cells.append(Vector2i(cell[0], cell[1]))
+	for r: Dictionary in manifest.rooms:
 		rooms[r.id] = r
-		_num_to_id[int(r.id.substr(1))] = r.id
+		for point: String in r.get("waypoints", {}):
+			waypoint_rooms[point] = r.id
 	astar.region = Rect2i(0, 0, size.x, size.y)
 	astar.cell_size = Vector2(tile_size, tile_size)
 	astar.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_NEVER
@@ -34,15 +39,20 @@ func _ready() -> void:
 		for x in size.x:
 			if grid.obstacle[y][x] == "1":
 				astar.set_point_solid(Vector2i(x, y), true)
-	for y in size.y:
-		for x in size.x:
-			var n: int = room_grid[y][x]
-			if n > 0 and _num_to_id.has(n):
-				var id: String = _num_to_id[n]
-				if not region_cells.has(id):
-					region_cells[id] = []
-				region_cells[id].append(Vector2i(x, y))
 	print("[Game] 网格 %dx%d 房间 %d 个" % [size.x, size.y, rooms.size()])
+
+func bind_room_layers(map_node: Node2D) -> void:
+	_room_by_cell.clear()
+	for r: Dictionary in rooms.values():
+		var layer: TileMapLayer = map_node.get_node(NodePath(r.layer))
+		var cells := layer.get_used_cells()
+		floor_cells[r.id] = cells
+		var walkable: Array[Vector2i] = []
+		for cell in cells:
+			_room_by_cell[cell] = r.id
+			if not is_blocked(cell):
+				walkable.append(cell)
+		region_cells[r.id] = walkable
 
 func is_blocked(cell: Vector2i) -> bool:
 	return not astar.is_in_boundsv(cell) or astar.is_point_solid(cell)
@@ -85,27 +95,21 @@ func nearest_open(cell: Vector2i) -> Vector2i:
 
 # ---- 房间查询 ----
 func room_id_at(world: Vector2) -> String:
-	var c := cell_of(world)
-	if c.x < 0 or c.y < 0 or c.x >= size.x or c.y >= size.y:
-		return ""
-	# ⚠️ room_grid 来自 JSON, 元素是 float; _num_to_id 键是 int。
-	# Godot 4 字典中 3.0 和 3 是不同的键, 必须显式 int() 转换后查询
-	# (此 bug 曾被 npc.gd WANDER 的 goal_room 回退掩盖, M2.2 上报时暴露)。
-	var n: int = int(room_grid[c.y][c.x])
-	return _num_to_id.get(n, "")
+	return _room_by_cell.get(cell_of(world), "")
 
 func room_name(rid: String) -> String:
-	return rooms.get(rid, {}).get("name", rid)
+	return rooms.get(waypoint_rooms.get(rid, rid), {}).get("name", rid)
 
 func room_type(rid: String) -> String:
-	return rooms.get(rid, {}).get("type", "room")
+	return rooms.get(waypoint_rooms.get(rid, rid), {}).get("type", "room")
 
 func nav_world_of(rid: String) -> Vector2:
-	var nav: Array = rooms.get(rid, {}).get("nav_point", [0, 0])
+	var room: Dictionary = rooms.get(waypoint_rooms.get(rid, rid), {})
+	var nav: Array = room.get("waypoints", {}).get(rid, room.get("spawn", [0, 0]))
 	return world_of(Vector2i(nav[0], nav[1]))
 
 func random_world_in(rid: String) -> Vector2:
-	var cells: Array = region_cells.get(rid, [])
+	var cells: Array = region_cells.get(waypoint_rooms.get(rid, rid), [])
 	if cells.is_empty():
 		return nav_world_of(rid)
 	return world_of(cells[randi() % cells.size()])

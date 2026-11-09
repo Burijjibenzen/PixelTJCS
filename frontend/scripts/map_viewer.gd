@@ -21,6 +21,7 @@ var manifest: Dictionary
 var grid: Dictionary
 var selected_layer: TileMapLayer
 var walk_cell := NO_CELL
+var walk_starts: Dictionary[Vector2i, bool] = {}
 var step_delay := 0.0
 var door_tiles := {}  # 当前楼层的门图块。开门时取走，关闭时恢复。
 var open_doors := {}  # 按楼层与门 id 保存，切换楼层后仍有效。
@@ -96,8 +97,9 @@ func show_floor(index: int, arrival := NO_CELL) -> void:
 	bar.get_node("Points").set_pressed_no_signal(point_display_by_floor.get(index, manifest.get("show_points", true)))
 	bar.get_node("Floor").select(index)
 	_cache_doors()
-	var spawn: Array = manifest.rooms[0].spawn
-	walk_cell = _cell(spawn) if arrival == NO_CELL else arrival
+	var spawn := _cell(manifest.rooms[0].spawn)
+	_cache_walk_starts(spawn)
+	walk_cell = arrival if walk_starts.has(arrival) and can_walk(arrival) else spawn
 	walker.position = _center(walk_cell)
 	walker.visible = bar.get_node("Walk").button_pressed
 	_frame_floor()
@@ -201,7 +203,8 @@ func _use(item: Dictionary) -> void:
 			else:
 				status.text = "%s　·　%s" % [item.name, item.get("text", "通往楼层图以外")]
 		_:
-			status.text = "%s　·　%s" % [item.name, item.get("text", "")]
+			var body := str(item.get("text", ""))
+			status.text = str(item.name) if body.is_empty() else "%s　·　%s" % [item.name, body]
 	status.tooltip_text = status.text
 
 func _in_door(cell: Vector2i, item: Dictionary) -> bool:
@@ -210,10 +213,26 @@ func _in_door(cell: Vector2i, item: Dictionary) -> bool:
 			return true
 	return false
 
+func _has_walkable_floor(cell: Vector2i) -> bool:
+	return Rect2i(Vector2i.ZERO, _cell(grid.size)).has_point(cell) and grid.obstacle[cell.y][cell.x] == "0"
+
+# 可开门的房间也可选为起点；家具和墙围住的空隙不可选。
+func _cache_walk_starts(spawn: Vector2i) -> void:
+	walk_starts.clear()
+	if not _has_walkable_floor(spawn):
+		return
+	var pending: Array[Vector2i] = [spawn]
+	walk_starts[spawn] = true
+	while not pending.is_empty():
+		var cell: Vector2i = pending.pop_back()
+		for direction: Vector2i in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+			var neighbor := cell + direction
+			if not walk_starts.has(neighbor) and _has_walkable_floor(neighbor):
+				walk_starts[neighbor] = true
+				pending.append(neighbor)
+
 func can_walk(cell: Vector2i) -> bool:
-	if not Rect2i(Vector2i.ZERO, _cell(grid.size)).has_point(cell):
-		return false
-	if grid.obstacle[cell.y][cell.x] == "1":
+	if not _has_walkable_floor(cell):
 		return false
 	for item: Dictionary in manifest.objects:
 		if item.type == "door" and not open_doors.get(_door_key(item), false) and _in_door(cell, item):
@@ -284,7 +303,7 @@ func _select_cell(cell: Vector2i) -> void:
 		_use(item)
 		return
 	selected_layer = null
-	if walker.visible and can_walk(cell):
+	if walker.visible and walk_starts.has(cell) and can_walk(cell):
 		walk_cell = cell
 		walker.position = _center(cell)
 		_center_on(cell)

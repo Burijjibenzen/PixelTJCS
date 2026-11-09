@@ -41,7 +41,8 @@ uvicorn backend.api:app --port 8000   # HTTP 接口（文档在 /docs）
 | 文档 | 内容 |
 |---|---|
 | [docs/CODE_GUIDE.md](docs/CODE_GUIDE.md) | **交接必读**：代码结构/机制详解/扩展指南 |
-| [docs/MAP_SPEC.md](docs/MAP_SPEC.md) | 地图格式规范：现状妥协 + 理想图层约定（补画 4F/智信馆前必读） |
+| [校园地图改图交接](map_sources/README.md) | 三份可编辑源图、障碍与装饰划分、在线改图及 Godot 重建步骤 |
+| [docs/MAP_SPEC.md](docs/MAP_SPEC.md) | 地图格式、图层约定和早期实现记录 |
 | [docs/DESIGN.md](docs/DESIGN.md) | 需求与设计方案（FR/架构/里程碑） |
 | [personas/](personas/) | 10 张人格卡（7 学生 + 3 导师教务） |
 

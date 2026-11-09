@@ -29,24 +29,18 @@ func _draw() -> void:
 	var ci := 0
 	for rid in Game.rooms:
 		var r: Dictionary = Game.rooms[rid]
-		var bb: Array = r.bbox
-		var tl := Game.world_corner(Vector2i(bb[0], bb[1]))
-		var br := Game.world_corner(Vector2i(bb[2] + 1, bb[3] + 1))
 		var col: Color = colors[ci % colors.size()]
 		ci += 1
-		# 半透明填充 + 粗边框 + 大字号黑描边文字(可读性优先)
-		draw_rect(Rect2(tl, br - tl), Color(col.r, col.g, col.b, 0.10), true)
-		draw_rect(Rect2(tl, br - tl), Color(col.r, col.g, col.b, 0.85), false, 3.0)
+		for cell: Vector2i in Game.floor_cells[rid]:
+			draw_rect(Rect2(Game.world_corner(cell), Vector2.ONE * Game.tile_size), Color(col.r, col.g, col.b, 0.28))
+		var tl := Game.nav_world_of(rid)
 		var label := "%s %s [%s]" % [rid, r.name, r.type]
 		draw_string(font, tl + Vector2(5, 19), label,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0, 0, 0, 0.9))
 		draw_string(font, tl + Vector2(4, 18), label,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 1))
-		# 门格画黄色小块, 直观看到"门在哪"
-		for d in r.get("door_cells", []):
-			var dc := Game.world_corner(Vector2i(d[0], d[1]))
-			draw_rect(Rect2(dc + Vector2(3, 3), Vector2(10, 10)),
-				Color(1, 0.9, 0.2, 0.65), true)
+	for cell: Vector2i in Game.door_cells:
+		draw_rect(Rect2(Game.world_corner(cell) + Vector2(3, 3), Vector2(10, 10)), Color(1, 0.9, 0.2, 0.65))
 	# NPC 目标线加粗 + 终点圆点
 	for npc in npcs:
 		if not is_instance_valid(npc):

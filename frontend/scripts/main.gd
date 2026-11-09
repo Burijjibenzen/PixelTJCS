@@ -15,6 +15,7 @@ var _dbg_prev := false            # F3/V 轮询边沿检测(事件路由不可�
 var _sched_ui_timer := 0.0        # 日程面板刷新节流
 
 func _ready() -> void:
+	Game.bind_room_layers($Map)
 	var roster: Array = Game._load_json(ROSTER_PATH).get("npcs", [])
 	for r in roster:
 		var npc := NPC_SCENE.instantiate()

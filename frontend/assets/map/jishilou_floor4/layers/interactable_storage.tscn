@@ -1,0 +1,9 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="TileSet" path="../tileset.tres" id="tiles"]
+
+[node name="interactable_storage" type="TileMapLayer"]
+tile_set = ExtResource("tiles")
+collision_enabled = false
+tile_map_data = PackedByteArray("AABVAAkAAAAYAAwAAABWAAkAAAAZAAwAAABXAAkAAAAaAAwAAABYAAkAAAAbAAwAAAA=")
+; build_floor.py 6c4ac473ca1dfe774d829beda8b9773b9f8f90c158d07b6b8454d5139dbd03a5

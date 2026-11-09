@@ -102,6 +102,9 @@ func report_arrival(npc) -> void:
 	var grid := Game.room_id_at(npc.global_position)
 	if grid == "":
 		return
+	# 旧日程仍可指定合并前的位置点；房间查询始终返回实际房间。
+	if Game.waypoint_rooms.get(npc.goal_room, "") == grid:
+		grid = npc.goal_room
 	_report_queue.append({"npc": npc.npc_name, "grid": grid})
 	_pump_report()
 

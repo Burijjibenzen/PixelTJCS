@@ -5,6 +5,7 @@ const IDS := ["jishilou_floor3", "jishilou_floor4", "zhixinguan_floor2"]
 const NAMES := ["济事楼 · 三楼", "济事楼 · 四楼", "智信馆 · 二楼"]
 const TILE := 16
 const NO_CELL := Vector2i(-1, -1)
+const MapDoors := preload("res://scripts/map_doors.gd")
 const VIEW_HINT := "点击房间或交互点　右键拖动　滚轮缩放　1/2/3 切换楼层　Esc 返回"
 const WALK_HINT := "方向键 / WASD 试走　E 操作身边的门、楼梯或物品　点击空地可从该处开始试走"
 
@@ -23,7 +24,7 @@ var selected_layer: TileMapLayer
 var walk_cell := NO_CELL
 var walk_starts: Dictionary[Vector2i, bool] = {}
 var step_delay := 0.0
-var door_tiles := {}  # 当前楼层的门图块。开门时取走，关闭时恢复。
+var doors: MapDoors
 var open_doors := {}  # 按楼层与门 id 保存，切换楼层后仍有效。
 var point_display_by_floor := {}
 var previous_pause := false
@@ -157,42 +158,21 @@ func _door_key(item: Dictionary) -> String:
 	return "%s/%s" % [IDS[current_floor], item.id]
 
 func _cache_doors() -> void:
-	door_tiles.clear()
-	var layer := map_node.get_node_or_null("door") as TileMapLayer
-	if not layer:
-		return
+	doors = MapDoors.new(map_node.get_node("door"), manifest.objects)
 	for item: Dictionary in manifest.objects:
-		if item.type != "door":
-			continue
-		var saved := {}
-		for coords: Array in item.get("art_cells", item.get("cells", [item.cell])):
-			var pos := _cell(coords)
-			if layer.get_cell_source_id(pos) >= 0:
-				saved[pos] = [layer.get_cell_source_id(pos), layer.get_cell_atlas_coords(pos), layer.get_cell_alternative_tile(pos)]
-		door_tiles[item.id] = saved
-		if open_doors.get(_door_key(item), false):
-			_paint_door(item, true)
-
-func _paint_door(item: Dictionary, is_open: bool) -> void:
-	var layer := map_node.get_node_or_null("door") as TileMapLayer
-	var saved: Dictionary = door_tiles.get(item.id, {})
-	for pos: Vector2i in saved:
-		if is_open:
-			layer.erase_cell(pos)
-		else:
-			var tile: Array = saved[pos]
-			layer.set_cell(pos, tile[0], tile[1], tile[2])
+		if item.type == "door" and open_doors.get(_door_key(item), false):
+			doors.set_open(item.id, true)
 
 func _use(item: Dictionary) -> void:
 	match str(item.type):
 		"door":
 			var key := _door_key(item)
 			var opening := not bool(open_doors.get(key, false))
-			if not opening and walker.visible and _in_door(walk_cell, item):
+			if not opening and walker.visible and doors.is_passage(item.id, walk_cell):
 				status.text = "请先离开门口再关门"
 				return
 			open_doors[key] = opening
-			_paint_door(item, opening)
+			doors.set_open(item.id, opening)
 			status.text = "%s　·　%s" % [item.name, "已打开，可通过" if opening else "已关闭"]
 			marks.queue_redraw()
 		"stair":
@@ -206,12 +186,6 @@ func _use(item: Dictionary) -> void:
 			var body := str(item.get("text", ""))
 			status.text = str(item.name) if body.is_empty() else "%s　·　%s" % [item.name, body]
 	status.tooltip_text = status.text
-
-func _in_door(cell: Vector2i, item: Dictionary) -> bool:
-	for coords: Array in item.get("passage_cells", item.get("cells", [item.cell])):
-		if cell == _cell(coords):
-			return true
-	return false
 
 func _has_walkable_floor(cell: Vector2i) -> bool:
 	return Rect2i(Vector2i.ZERO, _cell(grid.size)).has_point(cell) and grid.obstacle[cell.y][cell.x] == "0"
@@ -235,7 +209,7 @@ func can_walk(cell: Vector2i) -> bool:
 	if not _has_walkable_floor(cell):
 		return false
 	for item: Dictionary in manifest.objects:
-		if item.type == "door" and not open_doors.get(_door_key(item), false) and _in_door(cell, item):
+		if item.type == "door" and not open_doors.get(_door_key(item), false) and doors.is_passage(item.id, cell):
 			return false
 	return true
 
@@ -286,8 +260,7 @@ func _near_item(cell: Vector2i, radius: float) -> Dictionary:
 	for item: Dictionary in manifest.objects:
 		var score := Vector2(cell).distance_to(Vector2(_cell(item.cell)))
 		if item.type == "door":
-			var drawn_panel: Dictionary = door_tiles.get(item.id, {})
-			if _in_door(cell, item) or (not open_doors.get(_door_key(item), false) and drawn_panel.has(cell)):
+			if doors.is_passage(item.id, cell) or doors.is_closed_panel(item.id, cell):
 				score = 0.0
 		else:
 			for point: Array in item.get("cells", []):

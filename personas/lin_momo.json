@@ -22,7 +22,7 @@
     "09:00": "j3_lab",
     "11:30": "j3_pantry",
     "14:30": "j3_lab",
-    "15:00": "j3_wc",
+    "15:00": "jishilou_floor3/R09",
     "18:00": "j3_lab"
   },
   "initial_relations": {

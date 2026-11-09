@@ -28,6 +28,8 @@
 
 ## 查看与改图
 
+观察 NPC 寻路时留在主场景，用 **1 / 2 / 3** 切换观察楼层，按空格跟随角色。济事楼三、四楼经东西楼梯相连，NPC 跨馆时在两馆的西侧楼梯口转场。
+
 用 Godot 4.5 打开 `frontend/project.godot`，按 **F5 → 浏览楼层地图** 即可查看和试走。
 
 1. 在 **Project → Load** 中打开上表对应的 JSON。改好后点 **Save**，用下载的工程文件替换 `map_sources/` 中的同名 JSON。[Sprite Fusion 在线编辑器](https://www.spritefusion.com/editor)

@@ -1,14 +1,14 @@
 {
  "npcs": [
-  {"id": "yan_zheng",   "name": "严正",   "char": 1, "home": "R03", "tint": [1.0, 0.95, 0.90], "role": "教务主任"},
+  {"id": "yan_zheng",   "name": "严正",   "char": 1, "home": "R02", "office_alias": "zx4_yan", "tint": [1.0, 0.95, 0.90], "role": "教务主任"},
   {"id": "chen_juan",   "name": "陈卷",   "char": 2, "home": "R01", "tint": [0.90, 0.95, 1.0], "role": "学生"},
   {"id": "lin_momo",    "name": "林摸摸", "char": 3, "home": "R02", "tint": [1.0, 0.90, 0.95], "role": "学生"},
   {"id": "su_xiaoxin",  "name": "苏小新", "char": 4, "home": "R02", "tint": [0.92, 1.0, 0.92], "role": "学生"},
-  {"id": "zhou_chong",  "name": "周冲",   "char": 1, "home": "R05", "tint": [1.0, 1.0, 0.85], "role": "学生"},
-  {"id": "he_kuaixun",  "name": "何快讯", "char": 2, "home": "R01", "tint": [0.85, 0.90, 1.0], "role": "学生记者"},
+  {"id": "zhou_chong",  "name": "周冲",   "char": 1, "home": "R05", "offline_destination": {"map_id": "jishilou_floor4", "room_id": "R05"}, "tint": [1.0, 1.0, 0.85], "role": "学生"},
+  {"id": "he_kuaixun",  "name": "何快讯", "char": 2, "home_map": "zhixinguan_floor2", "home": "zx2_n256", "offline_destination": {"map_id": "zhixinguan_floor2", "room_id": "zx2_lib"}, "tint": [0.85, 0.90, 1.0], "role": "学生记者"},
   {"id": "wu_li",       "name": "吴鲤",   "char": 3, "home": "R03", "tint": [0.95, 0.85, 1.0], "role": "学生"},
   {"id": "fang_zhe",    "name": "方哲",   "char": 4, "home": "R09", "tint": [0.90, 1.0, 1.0],  "role": "心理委员"},
-  {"id": "wen_yan",     "name": "温言",   "char": 2, "home": "R06", "tint": [1.0, 0.88, 0.85], "role": "辅导员"},
-  {"id": "qian_guan",   "name": "钱管",   "char": 4, "home": "R07", "tint": [0.88, 1.0, 0.88], "role": "后勤"}
+  {"id": "wen_yan",     "name": "温言",   "char": 2, "home": "R05", "office_alias": "zx4_wen", "tint": [1.0, 0.88, 0.85], "role": "辅导员"},
+  {"id": "qian_guan",   "name": "钱管",   "char": 4, "home_map": "jishilou_floor4", "home": "R02", "office_alias": "zx4_qian", "tint": [0.88, 1.0, 0.88], "role": "后勤"}
  ]
 }

@@ -8,6 +8,7 @@
     http://127.0.0.1:8000/docs
 """
 
+from threading import Lock
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -16,18 +17,21 @@ from pydantic import BaseModel
 
 from backend.logger import get_logger
 from backend.service import GameService
-from backend.world import AREAS
+from backend.world import ROOMS
 
 log = get_logger(__name__)
 
 # 全局单例: 进程内只装配一次世界
 _service: Optional[GameService] = None
+_service_lock = Lock()
 
 
 def get_service() -> GameService:
     global _service
     if _service is None:
-        _service = GameService(fresh_db=True)
+        with _service_lock:
+            if _service is None:
+                _service = GameService(fresh_db=True)
     return _service
 
 
@@ -53,13 +57,17 @@ class AdvanceReq(BaseModel):
 
 class GotoReq(BaseModel):
     npc: str
-    area: str  # 区域 id，见 /areas
+    area: Optional[str] = None  # /areas 中的 id，或旧版日程地点
+    map_id: Optional[str] = None
+    room_id: Optional[str] = None
 
 
 class ReportReq(BaseModel):
-    """前端到达上报（M2.2）。grid = 前端几何区域 id（R01~R13）。"""
+    """新客户端上报实际楼层和房间；旧客户端可继续发送 grid。"""
     npc: str
-    grid: str
+    map_id: Optional[str] = None
+    room_id: Optional[str] = None
+    grid: Optional[str] = None
 
 
 class ChatReq(BaseModel):
@@ -104,8 +112,9 @@ def relations():
 
 @app.get("/areas")
 def areas():
-    """区域地图。"""
-    return list(AREAS.values())
+    """每个真实房间一条；原有地点保留旧版 id，新客户端使用 map_id 和 room_id。"""
+    return [dict(room, id=room["aliases"][0]) if room["aliases"] else room
+            for room in ROOMS.values()]
 
 
 # ----------------------------------------------------------------------
@@ -128,16 +137,16 @@ def advance_time(req: AdvanceReq):
 
 @app.post("/world/goto")
 def goto(req: GotoReq):
-    """指派角色前往某区域。
-
-    M2.2 语义升级：立即就位（M1 文字演示不变）+ 记录覆盖指令——
-    Godot 前端在线时会在下次轮询收到该指派并寻路前往；
-    日程翻段时间后指派自动失效，角色回归日程。
-    """
-    ok = get_service().goto(req.npc, req.area)
-    if not ok:
+    """设置目的地。实际位置由前端行走和到达上报更新。"""
+    area = req.area
+    if req.map_id is not None or req.room_id is not None:
+        room = ROOMS.get((req.map_id, req.room_id))
+        if room is None or area is not None:
+            raise HTTPException(400, "请提供有效的 map_id 和 room_id，或只提供 area")
+        area = room["id"]
+    if not area or not get_service().world.assign_override(req.npc, area):
         raise HTTPException(400, "npc 或 area 无效")
-    return {"ok": True, "npc": req.npc, "area": req.area}
+    return {"ok": True, "npc": req.npc, "area": area}
 
 
 @app.post("/world/report")
@@ -147,10 +156,11 @@ def report_arrival(req: ReportReq):
     ⚠️ 决策（已确认）：不写记忆——防 10 人移动噪音；
     "同处一室"观察记忆由 M2.3 相遇/视野事件写入。
     """
-    ok, msg = get_service().report_arrival(req.npc, req.grid)
+    ok, msg = get_service().report_arrival(req.npc, req.grid, req.map_id, req.room_id)
     if not ok:
         raise HTTPException(400, msg)
-    return {"ok": True, "npc": req.npc, "grid": req.grid, "detail": msg}
+    return {"ok": True, "npc": req.npc, "grid": req.grid, "map_id": req.map_id,
+            "room_id": req.room_id, "detail": msg}
 
 
 @app.post("/chat")

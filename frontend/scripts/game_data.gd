@@ -1,129 +1,188 @@
 extends Node
-## 地图数据 + 寻路网格 + 房间查询 (autoload: Game)
-## 建筑分区由房间地板图层指定；grid.json 只负责寻路障碍。
+## 地板图层给出房间归属，各楼层的 A* 网格负责通行。
 
-const MAP_DIR := "res://assets/map/jishilou_floor3"
+const FLOOR3 := "jishilou_floor3"
+const FLOOR4 := "jishilou_floor4"
+const ZHIXING := "zhixinguan_floor2"
+const MAP_IDS := [FLOOR3, FLOOR4, ZHIXING]
 
-var tile_size: int = 16
-var origin := Vector2i.ZERO          # 地图原点格坐标
-var size := Vector2i.ZERO            # 网格宽高(格)
-var astar := AStarGrid2D.new()
-var rooms := {}
-var floor_cells := {}                # 房间的全部地板，供区域显示
-var region_cells := {}               # 房间里可走的地板，供 NPC 漫步
-var _room_by_cell := {}
-var waypoint_rooms := {}             # 旧日程位置点 -> 实际所在房间
-var door_cells: Array[Vector2i] = []
+var tile_size := 16
+var floor_data := {}
+var size := Vector2i.ZERO  # 地图浏览器以三楼的大小确定默认缩放。
+var _links := {}
+
+# 旧的三楼调试和日程调用方仍可读取原来的房间数据。
+var rooms: Dictionary:
+	get: return floor_data[FLOOR3].rooms
+var waypoint_rooms: Dictionary:
+	get: return floor_data[FLOOR3].waypoint_rooms
+var floor_cells: Dictionary:
+	get: return floor_data[FLOOR3].floor_cells
+var door_cells: Array:
+	get: return floor_data[FLOOR3].door_cells
 
 func _ready() -> void:
-	var grid: Dictionary = _load_json(MAP_DIR + "/grid.json")
-	origin = Vector2i(grid.origin[0], grid.origin[1])
-	size = Vector2i(grid.size[0], grid.size[1])
-	tile_size = int(grid.tile_size)
-	var manifest := _load_json(MAP_DIR + "/manifest.json")
-	for obj: Dictionary in manifest.objects:
-		if obj.type == "door":
-			for cell: Array in obj.get("passage_cells", obj.get("cells", [obj.cell])):
-				door_cells.append(Vector2i(cell[0], cell[1]))
-	for r: Dictionary in manifest.rooms:
-		rooms[r.id] = r
-		for point: String in r.get("waypoints", {}):
-			waypoint_rooms[point] = r.id
-	astar.region = Rect2i(0, 0, size.x, size.y)
-	astar.cell_size = Vector2(tile_size, tile_size)
-	astar.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_NEVER
-	astar.default_compute_heuristic = AStarGrid2D.HEURISTIC_MANHATTAN
-	astar.default_estimate_heuristic = AStarGrid2D.HEURISTIC_MANHATTAN
-	astar.update()
-	for y in size.y:
-		for x in size.x:
-			if grid.obstacle[y][x] == "1":
-				astar.set_point_solid(Vector2i(x, y), true)
-	print("[Game] 网格 %dx%d 房间 %d 个" % [size.x, size.y, rooms.size()])
+	var next_offset := Vector2.ZERO
+	for map_id: String in MAP_IDS:
+		var dir := "res://assets/map/%s/" % map_id
+		var grid := _load_json(dir + "grid.json")
+		var manifest := _load_json(dir + "manifest.json")
+		var astar := AStarGrid2D.new()
+		astar.region = Rect2i(Vector2i.ZERO, _cell(grid.size))
+		astar.cell_size = Vector2.ONE * tile_size
+		astar.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_NEVER
+		astar.default_compute_heuristic = AStarGrid2D.HEURISTIC_MANHATTAN
+		astar.default_estimate_heuristic = AStarGrid2D.HEURISTIC_MANHATTAN
+		astar.update()
+		for y in astar.region.size.y:
+			for x in astar.region.size.x:
+				if grid.obstacle[y][x] == "1":
+					astar.set_point_solid(Vector2i(x, y))
+		var floor := {
+			"name": manifest.name, "origin": _cell(grid.origin), "size": astar.region.size,
+			"offset": next_offset, "astar": astar, "rooms": {}, "waypoint_rooms": {},
+			"room_by_cell": {}, "floor_cells": {}, "region_cells": {}, "door_cells": [],
+			"stairs": {}, "doors": [],
+		}
+		for room: Dictionary in manifest.rooms:
+			floor.rooms[room.id] = room
+			for waypoint in room.get("waypoints", {}):
+				floor.waypoint_rooms[waypoint] = room.id
+		for obj: Dictionary in manifest.objects:
+			if obj.type == "door":
+				floor.doors.append(obj)
+				for point in obj.get("passage_cells", obj.get("cells", [obj.cell])):
+					floor.door_cells.append(_cell(point))
+			elif obj.type == "stair":
+				floor.stairs[obj.id] = obj
+		floor_data[map_id] = floor
+		_links[map_id] = []
+		next_offset.x += (astar.region.size.x + 64) * tile_size
+	size = floor_data[FLOOR3].size
+	_connect_floors()
 
-func bind_room_layers(map_node: Node2D) -> void:
-	_room_by_cell.clear()
-	for r: Dictionary in rooms.values():
-		var layer: TileMapLayer = map_node.get_node(NodePath(r.layer))
+func _connect_floors() -> void:
+	for map_id: String in MAP_IDS:
+		for stair: Dictionary in floor_data[map_id].stairs.values():
+			var dest: String = stair.get("destination_map", "")
+			if not floor_data.has(dest):
+				continue
+			# 入口取对向楼梯记录的落地格，避免走进墙上的楼梯画面。
+			var reverse: Dictionary = floor_data[dest].stairs.get(stair.id, {})
+			if reverse.get("destination_map", "") == map_id:
+				_add_link(map_id, _cell(reverse.destination_cell), dest, _cell(stair.destination_cell))
+	# 跨馆时在两栋楼的西侧楼梯口转场，省略未绘制的室外路程。
+	var west_jishi := _cell(floor_data[FLOOR4].stairs.stair_west.destination_cell)
+	var west_zhixing := _cell(floor_data[ZHIXING].stairs.zx2_stair_w.cell)
+	_add_link(FLOOR3, west_jishi, ZHIXING, west_zhixing)
+	_add_link(ZHIXING, west_zhixing, FLOOR3, west_jishi)
+
+func _add_link(map_id: String, start: Vector2i, dest: String, end: Vector2i) -> void:
+	if is_blocked(start, map_id) or is_blocked(end, dest):
+		push_error("楼层连接的落脚点不可通行：%s %s → %s %s" % [map_id, start, dest, end])
+		return
+	_links[map_id].append({"at": world_of(start, map_id), "dest": dest, "landing": world_of(end, dest)})
+
+func _cell(raw: Array) -> Vector2i:
+	return Vector2i(int(raw[0]), int(raw[1]))
+
+func map_offset(map_id: String) -> Vector2:
+	return floor_data[map_id].offset
+
+func map_name(map_id: String) -> String:
+	return floor_data[map_id].name
+
+func bind_room_layers(map_node: Node2D, map_id: String = FLOOR3) -> void:
+	var floor: Dictionary = floor_data[map_id]
+	floor.room_by_cell.clear()
+	for room: Dictionary in floor.rooms.values():
+		var layer := map_node.get_node(NodePath(room.layer)) as TileMapLayer
 		var cells := layer.get_used_cells()
-		floor_cells[r.id] = cells
 		var walkable: Array[Vector2i] = []
 		for cell in cells:
-			_room_by_cell[cell] = r.id
-			if not is_blocked(cell):
+			floor.room_by_cell[cell] = room.id
+			if not is_blocked(cell, map_id):
 				walkable.append(cell)
-		region_cells[r.id] = walkable
+		floor.floor_cells[room.id] = cells
+		floor.region_cells[room.id] = walkable
 
-func is_blocked(cell: Vector2i) -> bool:
+func is_blocked(cell: Vector2i, map_id: String = FLOOR3) -> bool:
+	var astar: AStarGrid2D = floor_data[map_id].astar
 	return not astar.is_in_boundsv(cell) or astar.is_point_solid(cell)
 
-func cell_of(world: Vector2) -> Vector2i:
-	return Vector2i((world / float(tile_size)).floor()) - origin
+func cell_of(world: Vector2, map_id: String = FLOOR3) -> Vector2i:
+	return Vector2i(((world - map_offset(map_id)) / tile_size).floor()) - Vector2i(floor_data[map_id].origin)
 
-func world_of(cell: Vector2i) -> Vector2:
-	return Vector2(cell + origin) * tile_size + Vector2.ONE * tile_size * 0.5
+func world_corner(cell: Vector2i, map_id: String = FLOOR3) -> Vector2:
+	return map_offset(map_id) + Vector2(cell + Vector2i(floor_data[map_id].origin)) * tile_size
 
-func world_corner(cell: Vector2i) -> Vector2:
-	return Vector2(cell + origin) * tile_size
+func world_of(cell: Vector2i, map_id: String = FLOOR3) -> Vector2:
+	return world_corner(cell, map_id) + Vector2.ONE * tile_size * 0.5
 
-func path_between(from_world: Vector2, to_world: Vector2) -> PackedVector2Array:
-	var a := cell_of(from_world)
-	var b := cell_of(to_world)
-	if is_blocked(a):
-		a = nearest_open(a)
-	if is_blocked(b):
-		b = nearest_open(b)
-	if a == b or not astar.is_in_boundsv(a) or not astar.is_in_boundsv(b):
-		return PackedVector2Array()
-	var pts := astar.get_point_path(a, b)
-	var out := PackedVector2Array()
-	var center_off := Vector2.ONE * tile_size * 0.5
-	for p in pts:
-		out.append(p + Vector2(origin) * tile_size + center_off)
-	return out
+func path_between(from_world: Vector2, to_world: Vector2, map_id: String = FLOOR3) -> PackedVector2Array:
+	var a := cell_of(from_world, map_id)
+	var b := cell_of(to_world, map_id)
+	var result := PackedVector2Array()
+	if is_blocked(a, map_id) or is_blocked(b, map_id):
+		return result
+	var astar: AStarGrid2D = floor_data[map_id].astar
+	for cell in astar.get_id_path(a, b):
+		result.append(world_of(cell, map_id))
+	return result
 
-func nearest_open(cell: Vector2i) -> Vector2i:
-	if not is_blocked(cell):
-		return cell
-	for r in range(1, 6):
-		for dx in range(-r, r + 1):
-			for dy in range(-r, r + 1):
-				var c := cell + Vector2i(dx, dy)
-				if astar.is_in_boundsv(c) and not astar.is_point_solid(c):
-					return c
-	return cell
+# 各条楼梯的代价取实际的楼内步数，因此东侧角色可以选更近的东楼梯。
+func route(map_id: String, start: Vector2, dest: String, target: Vector2, visited: Array = []) -> Array:
+	if map_id == dest:
+		var path := path_between(start, target, map_id)
+		return [] if path.is_empty() else [{"path": path}]
+	var best: Array = []
+	var best_length := INF
+	for link: Dictionary in _links[map_id]:
+		if visited.has(link.dest):
+			continue
+		var walk := path_between(start, link.at, map_id)
+		if walk.is_empty():
+			continue
+		var rest := route(link.dest, link.landing, dest, target, visited + [map_id])
+		if rest.is_empty():
+			continue
+		var length := walk.size()
+		for section: Dictionary in rest:
+			length += section.path.size()
+		if length < best_length:
+			best_length = length
+			best = [{"path": walk, "dest": link.dest, "landing": link.landing}] + rest
+	return best
 
-# ---- 房间查询 ----
-func room_id_at(world: Vector2) -> String:
-	return _room_by_cell.get(cell_of(world), "")
+func room_id_at(world: Vector2, map_id: String = FLOOR3) -> String:
+	return floor_data[map_id].room_by_cell.get(cell_of(world, map_id), "")
 
-func room_name(rid: String) -> String:
-	return rooms.get(waypoint_rooms.get(rid, rid), {}).get("name", rid)
+func actual_room(map_id: String, rid: String) -> String:
+	return floor_data[map_id].waypoint_rooms.get(rid, rid)
 
-func room_type(rid: String) -> String:
-	return rooms.get(waypoint_rooms.get(rid, rid), {}).get("type", "room")
+func has_room(map_id: String, rid: String) -> bool:
+	return floor_data.has(map_id) and floor_data[map_id].rooms.has(actual_room(map_id, rid))
 
-func nav_world_of(rid: String) -> Vector2:
-	var room: Dictionary = rooms.get(waypoint_rooms.get(rid, rid), {})
-	var nav: Array = room.get("waypoints", {}).get(rid, room.get("spawn", [0, 0]))
-	return world_of(Vector2i(nav[0], nav[1]))
+func room_name(rid: String, map_id: String = FLOOR3) -> String:
+	return floor_data[map_id].rooms.get(actual_room(map_id, rid), {}).get("name", rid)
 
-func random_world_in(rid: String) -> Vector2:
-	var cells: Array = region_cells.get(waypoint_rooms.get(rid, rid), [])
-	if cells.is_empty():
-		return nav_world_of(rid)
-	return world_of(cells[randi() % cells.size()])
+func room_type(rid: String, map_id: String = FLOOR3) -> String:
+	return floor_data[map_id].rooms.get(actual_room(map_id, rid), {}).get("type", "room")
 
-func all_room_ids() -> Array:
-	return rooms.keys()
+func nav_world_of(rid: String, map_id: String = FLOOR3) -> Vector2:
+	var room: Dictionary = floor_data[map_id].rooms[actual_room(map_id, rid)]
+	return world_of(_cell(room.get("waypoints", {}).get(rid, room.spawn)), map_id)
+
+func random_world_in(rid: String, map_id: String = FLOOR3) -> Vector2:
+	var cells: Array = floor_data[map_id].region_cells[actual_room(map_id, rid)]
+	return world_of(cells.pick_random(), map_id)
+
+func all_room_ids(map_id: String = FLOOR3) -> Array:
+	return floor_data[map_id].rooms.keys()
 
 func _load_json(path: String) -> Dictionary:
-	var txt := FileAccess.get_file_as_string(path)
-	if txt.is_empty():
-		push_error("无法读取: " + path)
-		return {}
-	var data = JSON.parse_string(txt)
-	if data == null:
-		push_error("JSON 解析失败: " + path)
+	var data = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if not data is Dictionary:
+		push_error("无法读取地图数据：" + path)
 		return {}
 	return data

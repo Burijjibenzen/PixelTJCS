@@ -7,12 +7,9 @@
 
 ## 1. 项目一句话
 
-10 个校园 NPC（7 学生 + 3 导师/教务）生活在"纪事楼 3F/4F + 智信馆 4F"里，
-**彼此对话、各自记事、随时间遗忘、关系动态变化**；玩家模式（M4）允许真人
-加入其中。后端是纯 Python 服务（大脑）；前端是独立可运行的 Godot 4.5 工程
-（身体，M2.1 已完成：地图分区/寻路/日程移动，尚未接后端，见 §6/§7）。
+10 个校园 NPC 在济事楼三楼、四楼和智信馆二楼活动。Godot 依据每层的实际地板和障碍物移动角色。连接后端后，角色按日程或临时指派行动，并上报实际走到的楼层和房间。离线时可直接观看本地演示。
 
-## 2. 当前状态（M1 + M2.1 完成）
+## 2. 当前状态
 
 | 能力 | 状态 | 入口 |
 |---|---|---|
@@ -24,7 +21,7 @@
 | 游戏时钟 + 时间加速 | ✅ | `backend/world.py` |
 | 玩家↔NPC 对话（最小版） | ✅ | `POST /chat` |
 | Godot 前端独立运行（地图/寻路/移动/调试视图） | ✅ M2.1 | `frontend/`（§6/§7） |
-| NPC 自由移动 | ⚠️ 前端已有（M2.1 本地日程）；后端仍是逻辑位置 | `frontend/scripts/npc.gd` |
+| NPC 自由移动 | 三层地图支持楼内、跨层及跨馆寻路 | `frontend/scripts/npc.gd` |
 | 前端↔后端联动（/world 驱动移动 + 位置上报） | ✅ M2.2 | `frontend/scripts/api_client.gd` + `POST /world/report`（§12 第 7 条） |
 | LangGraph 编排迁移 | ❌ M3（接口已预留） | 见 §11.3 |
 
@@ -95,7 +92,7 @@ Roamchestra/
 │   │                     #   api_client(后端轮询/上报/快进, M2.2) · debug_draw(区域调试层)
 │   ├── scenes/           #   main.tscn · npc.tscn · char_1~4.tres(4 套角色各 38 帧动画)
 │   ├── data/npc_roster.json  # 10 NPC: id(与后端 persona 同名)/贴图编号/出身房间/色调
-│   ├── assets/map/jishilou_floor3/  # 纪事楼3F 地图(7 层.tscn) + floor3_grid/rooms/room_overrides.json
+│   ├── assets/map/             # 三个楼层的场景、房间清单和导航网格
 │   └── tools/            #   extract_map_data.py(地图→网格/区域) · gen_char_frames.py(帧动画生成)
 ├── docs/
 │   ├── CODE_GUIDE.md     # 本文档
@@ -194,71 +191,26 @@ FastAPI 路由 → 一行调 GameService。全局单例 `_service`（首次访�
 
 ## 6. Godot 前端详解（M2.1 新增）
 
-### 6.1 架构总览
-分工原则：**后端=大脑（权威模拟），Godot=身体（展示+移动）**。M2.1 阶段后端尚未接入，
-前端用"本地演示日程"（随机挑 NPC 去随机房间）跑通整条身体链路；M2.2 只换驱动源
-（HTTP 轮询后端），`npc.go_to_room()` 接口不变，前端主体零改动。前端无任何 Python
-依赖，启动链：`project.godot` → 主场景 `scenes/main.tscn` → autoload `Game`
-（scripts/game_data.gd）加载两份 JSON → main.gd 按 `data/npc_roster.json` 生成 10 个
-NPC 实例（scenes/npc.tscn）。
+### 6.1 楼层和寻路
 
-### 6.2 四个脚本（scripts/）
-| 文件 | 职责 | 关键接口 |
-|---|---|---|
-| `game_data.gd`（autoload `Game`） | 地图数据+寻路+房间查询。启动时读 `floor3_grid.json`（障碍矩阵）建 **AStarGrid2D**（4 邻接/曼哈顿启发，禁对角穿缝），读 `rooms.json` 建 id→元数据 | `path_between(a, b)` 世界坐标寻路；`nav_world_of(rid)` 房间导航点；`room_id_at(world)` 坐标→房间 id；`random_world_in(rid)` 房内随机点；`room_name/type`；`is_blocked(cell)` |
-| `npc.gd`（`class_name NPC`，CharacterBody2D） | 身体：**IDLE/WANDER/WALK** 状态机，速度 55px/s；碰撞盒 8×6（小于半格，保证过 1 格门），NPC 间不互撞（collision_mask=1）；卡墙两级自救：卡 0.6s 以当前路点重寻路 → 卡 1.2s 传送回最近可走格 | `setup(id, name, char_id, home, tint)` 装配；**`go_to_room(rid)` ★M2.2 后端指令直译★**；`go_to(world_pos)`；信号 `arrived(npc)` |
-| `camera.gd`（Camera2D） | 自由镜头：**方向键**平移（速度随缩放自适应；WASD 留给 M4 玩家）、滚轮缩放 0.8~5.0、空格循环跟随 NPC（lerp 平滑）、Esc 取消 | `set_target(node)` |
-| `main.gd`（main.tscn 根） | 装配：生成 NPC + 注入 ApiClient/DebugDraw；**双驱动**（ApiClient 在线=后端日程，离线=本地演示日程，永不白屏）；右上角日程面板（0.5s 刷新"谁→去哪/已到"）；右下角快进按钮；F3/V 键轮询检测切调试视图 | `cycle_follow()` 空格跟随；`_refresh_schedule_ui()`；`_toggle_debug()` |
-| `api_client.gd`（autoload `ApiClient`） | **M2.2 后端联动**：每秒 GET `/world` → `target_grid` 与当前目标不同才 `go_to_room()`；到达上报队列（单飞行防并发）；连续 3 次失败回退本地日程、恢复自动切回；`last_world` 缓存供日程面板 | `setup(npcs)`；`report_arrival(npc)`；`advance_time(分钟)`；信号 `online_changed`/`advance_done` |
-| `debug_draw.gd`（DebugDraw 节点，位于 Actors 之后） | 区域调试视图**独立层**——必须画在地图之上（曾画在根节点，根先于子节点渲染，被瓦片完全遮挡）：半透明房间块+粗框+描边大字、门格黄标、NPC 目标线 | `set_enabled(bool)`；`setup(npcs)` |
+Godot 为每层创建独立的 A* 网格。程序从楼层目录的 `grid.json` 读取静态障碍，从 `manifest.json` 和实际地板图层读取房间归属、落脚点与楼梯。济事楼三楼、四楼各有 9 个区域，智信馆二楼有 22 个。两个楼层可以使用同一个房间编号，例如三楼的 `R05` 是东侧机房，四楼的 `R05` 是学术讲座教室。
 
-### 6.3 数据文件
-| 文件 | 生成方式 | 内容 |
-|---|---|---|
-| `assets/map/jishilou_floor3/floor3_grid.json` | `tools/extract_map_data.py` | 寻路网格：tile_size=16、size=[133,70]、`obstacle` 矩阵（'0'=可走）、`room_grid` 房间号矩阵 |
-| `assets/map/jishilou_floor3/rooms.json` | 同上（**产物，勿手改**） | 13 个区域：`id`/`name`/`type`(room·corridor)/`area_tiles`/`bbox`/`aspect`/`nav_point` 导航点/`door_cells` 门格 |
-| `assets/map/jishilou_floor3/room_overrides.json` | **人工维护** | 提取器的人工修正入口：`extra_walls` 虚拟墙（封闭无门的宽门洞，留 2 格当门）+ `renames` 改名/改类型；改完重跑提取器即生效 |
-| `data/npc_roster.json` | 人工维护 | 10 NPC：`id`（与后端 persona 文件同名）/`char` 1~4 贴图编号/`home` 出身房间/`tint` 色调/`role` |
-| `assets/map/jishilou_floor3/_region_preview.txt` | 提取器产物 | ASCII 区域预览图，改 overrides 时对照用 |
+NPC 收到目标后，先走到可达的楼梯落脚点，在另一层的对应入口继续寻路。济事楼东、西楼梯都可往返三、四楼。跨馆行程在济事楼三楼西楼梯与智信馆二楼西端楼梯之间转场，省略室外步行。切换观察楼层时，其他楼层的角色仍按原路线移动。
 
-### 6.4 地图提取管线（tools/）
-```bash
-# 地图数据再提取（地图 .tscn 或 room_overrides.json 改动后执行，两个参数同为地图目录）
-python frontend/tools/extract_map_data.py frontend/assets/map/jishilou_floor3 frontend/assets/map/jishilou_floor3
-# 角色帧动画生成（4 套 char_N.tres；帧布局取自 AI-Town，一般不需要重跑）
-python frontend/tools/gen_char_frames.py <AI-Town角色贴图目录> frontend/scenes
-```
-extract_map_data.py 四步原理：① `wall_3` 图层=墙本体（初版按障碍邻接判门曾漏检 2 格宽
-门导致 R01 吞全图，已废弃）；② 门=墙线上 **1~3 格宽缺口**且两侧必须是真墙（家具缝隙
-不误封）；③ 门格临时封闭后洪水填充 → 连通块=区域（<8 格碎片丢弃）；④ 孤立格 BFS
-归并到相邻区域。
+### 6.2 代码和数据入口
 
-### 6.5 关键设计取舍
-1. **区域判定两层设计**：纯几何无法判语义（哪块是"机房"哪块是"走廊"）→ 自动层
-   （几何提取，保证房间闭合、不穿墙）+ 语义层（`room_overrides.json` 虚拟墙+改名）。
-   **房间名可随便改**：前后端逻辑只认 R01~R13 编号，renames 只是显示层。
-2. **视野规则按区域类型区分**（M2.3 上报的判定基础）：`room`=室内互见全部；
-   `corridor`=距离截断（约 10 格，"走廊里看不见走廊尽头"）。
-3. **后端指令接口现在就定型**：`npc.go_to_room(rid)` 与后端未来 `/world/state` 的
-   "目标区域"字段一一对应（区域 id 同源 R01~R13），M2.2 接入时前端零改动。
-4. **贴图复用+程序生成动画**：10 NPC 复用 AI-Town 的 4 套 48x70 角色图（idle 14 帧+
-   四向 walk 各 6 帧，5fps），以 `modulate` 色调+名牌区分；38 帧动画数据由
-   gen_char_frames.py 按帧布局生成 .tres，不手工拼 SpriteFrames。
+| 文件 | 用途 |
+| --- | --- |
+| `frontend/scripts/game_data.gd` | 读取每层的网格、房间和楼梯，计算各段路线。 |
+| `frontend/scripts/npc.gd` | 执行房内闲逛和定点行程。按照目标楼层、房间走完路线后发出到达信号。 |
+| `frontend/scripts/main.gd`、`camera.gd`、`debug_draw.gd` | 管理楼层观察、镜头跟随、调试视图和日程面板。 |
+| `frontend/scripts/api_client.gd` | 读取后端日程目标并上报角色实际位置。连接中断后恢复本地演示。 |
+| `frontend/data/npc_roster.json` | 配置现有十名角色的贴图、出生位置及离线演示目的地。 |
+| `frontend/assets/map/<楼层>/manifest.json` | 查看该层的房间编号、名称和楼梯。NPC 目标同时使用楼层编号和房间编号。 |
 
-### 6.6 当前 13 区域一览（名字待定，改法见 §6.3 overrides）
-| id | 名称 | 类型 | 面积(格) | 备注 |
-|---|---|---|---|---|
-| R01 | 走廊与开放区 | corridor | 802 | 横贯走廊，长宽比 8.4 |
-| R02 | 机房B(待定) | room | — | 上排左 |
-| R03 | J3实验室(待定) | room | — | 上排中 |
-| R04 | 右侧楼道(竖向通道) | corridor | — | 右侧竖向楼道 |
-| R05 | 机房C(待定) | room | — | 上排右 |
-| R06 | 左下开放区(待定) | room | 177 | |
-| R07 | 茶水间(待定) | room | 108 | |
-| R08/R11/R13 | 楼梯间南段/北段/西口(待定) | room | 51/25/10 | 楼梯瓦片被上层覆盖未识别为 stairwell，类型可直接改 |
-| R09 | 中部小间(待定) | room | 48 | |
-| R10 | 楼道门厅(待定) | room | 28 | |
-| R12 | 小隔间(待定) | room | 16 | |
+三份可编辑源图、图层命名与地图重建命令见[地图交接](../map_sources/README.md)。角色帧仍可通过 `frontend/tools/gen_char_frames.py` 根据原角色贴图生成。
+
+教师和教务继续使用旧日程中的办公室别名。当前严正暂用济事楼三楼中部机房，温言暂用三楼东侧机房，钱管暂用四楼中部机房。团队确定具体工位后，只需在角色名册中修改对应人物的 `home_map` 和 `home`，保留 `office_alias`，重启前后端即可。已有角色日程和旧演示指令会自动使用新地点。[角色名册](../frontend/data/npc_roster.json)
 
 ## 7. Godot 使用方法（从零到运行）
 
@@ -281,29 +233,32 @@ extract_map_data.py 四步原理：① `wall_3` 图层=墙本体（初版按障�
    **导入并编辑**；
 2. 首次打开自动导入资源（几秒~几十秒）；
 3. 按 **F5** 运行（主场景已在 project.godot 配置为 scenes/main.tscn）；
-4. 验收：底部**"输出"面板**应打印 `[Game] 网格 133x70 房间 13 个` →
-   `[Main] 已生成 10 个 NPC`，随后每 4~7 秒 `[日程] ...` / `[到达] ...`。
+4. 进入主场景后，用楼层选择器观察三张地图。离线也可以跟随 NPC 看到完整行程；从「浏览楼层地图」按 Esc 可返回 NPC 模拟。
 
 ### 7.3 操作与验收点
 | 按键 | 功能 |
 |---|---|
 | 滚轮 | 缩放（0.8~5 倍） |
 | **方向键** | 镜头平移（越放大移得越慢；**WASD 保留给 M4 玩家实体**） |
-| 空格 | 循环跟随 10 个 NPC（左上角显示跟随对象） |
+| **1 / 2 / 3** | 切换观察济事楼三楼、四楼或智信馆二楼。 |
+| 空格 | 循环跟随 10 个 NPC，角色转场时镜头随它切换楼层。 |
 | Esc | 取消跟随 |
-| **F3 或 V** | 调试视图：13 个区域框+名称+类型、门口黄块标记、黄色寻路目标线（部分笔记本 F 键默认是多媒体键，按 Fn+F3 或直接按 V） |
+| **F3 或 V** | 显示当前楼层的房间地板、名称、门口标记和 NPC 当前行走段的目标（部分笔记本 F 键默认是多媒体键，按 Fn+F3 或直接按 V） |
 | **快进1小时 / 快进4小时**（右下角按钮） | 游戏内时间控制：后端时钟跳进 → 日程翻段 → NPC 迁移（仅后端在线时可用；离线模式自动隐藏） |
 
-核心验收点：NPC **绕墙不穿模**、过门走门洞、F3 区域框与视觉房间吻合、跟随平滑。
+离线可跟随周冲从三楼东侧机房前往四楼学术讲座教室。打开区域调试后，可以看到角色先走到楼梯，到四楼后再走向教室。也可以观察智信馆二楼图书分馆的到达效果。
 
-### 7.4 命令行方式（无窗口冒烟测试，改代码后快速回归）
+### 7.4 用 Godot 验证 NPC 寻路
+
+从仓库根目录打开 PowerShell，将第一行设为本机的 Godot 可执行文件。首次运行先导入资源。
+
 ```powershell
-# 跑 600 帧(60fps≈10 秒)自动退出; stdout/stderr 落文件再看, 控制台直显可能截断
-& "E:\...\Godot_v4.5.2-stable_win64.exe" --headless --path "E:\...\Roamchestra\frontend" --quit-after 600 > out.txt 2> err.txt
+$godotExe = "E:\homework\JishiTown\tools\godot-4.5\Godot_v4.5-stable_win64_console.exe"
+& $godotExe --headless --path frontend --import
+& $godotExe --headless --fixed-fps 60 --path frontend --script (Resolve-Path scripts/check_campus_navigation.gd).Path
 ```
-- `--headless` 无窗口跑完整游戏逻辑（JSON 加载/NPC 生成/寻路照常）；
-- 验收标准：`err.txt` 为空，`out.txt` 含 §7.2 第 4 步的三类日志；
-- 其他常用参数：`--editor`（直接开编辑器）、`--path <目录>`（指定工程）。
+
+脚本检查 40 个房间落点的连通性，再运行主场景，让周冲走到四楼讲座教室、智信馆图书分馆，最后回到三楼东侧机房。每一站都核对实际位置、换层顺序和到达信号，全部通过时输出 `PASS`。
 
 ### 7.5 Godot 常见问题（另见 §13 排查表）
 | 症状 | 处理 |
@@ -312,8 +267,8 @@ extract_map_data.py 四步原理：① `wall_3` 图层=墙本体（初版按障�
 | uid 警告 / "uid not found" | 网页绘图工具导出的场景带自制 uid 字符串，无害；Godot 按路径解析，编辑器保存一次后自动生成正确缓存 |
 | F5 提示 "No main scene defined" | 文件面板右键 `scenes/main.tscn` → 设为主场景 |
 | 中文显示方块 | Godot 4 自动回退系统字体（微软雅黑），正常 Windows 不出现 |
-| NPC 走在桌子/柜子图块上 | 家具碰撞只挡部分层；观感不佳可在 `room_overrides.json` 加虚拟墙后重跑提取器（§6.4） |
-| 改了区域名没生效 | 改 `room_overrides.json` 的 `renames`（不是 rooms.json，它是产物会被覆盖）→ 重跑提取器 |
+| NPC 走进桌柜的占地 | 检查家具是否放在障碍层，重建该楼层的通行网格，然后重新运行游戏。 |
+| 改了区域名没生效 | 核对该层 `manifest.json` 中的房间名称，重启 Godot 和后端以加载新清单。 |
 
 ## 8. 一次演示调用的完整数据流（跟着走一遍就懂了）
 
@@ -339,15 +294,15 @@ run_demo.py
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/health` | 健康检查 |
-| GET | `/world` | 世界快照（时间/全员位置/最近事件）；M2.2 起每个 NPC 含 `grid`/`target_grid`（前端寻路目标，语义区域→R## 投影） |
+| GET | `/world` | 世界快照（时间/全员位置/最近事件）；每个 NPC 带有当前位置 `map_id` / `room_id` 与目的地 `target_map_id` / `target_room_id` |
 | GET | `/npcs` | 角色名单（身份/性格/位置） |
 | GET | `/npcs/{name}/memory` | ★个人记忆面板: `active`/`forgotten`/`reflections` 三视图 |
 | GET | `/relations` | 全员关系矩阵（0~100，None=陌生人） |
 | GET | `/areas` | 区域地图 |
 | POST | `/conversation` | ★触发 NPC↔NPC 对话 `{a, b, trigger}` |
 | POST | `/world/advance` | ★时间推进+遗忘+反思 `{minutes}`（快进3天=4320） |
-| POST | `/world/goto` | 指派角色前往某区域 `{npc, area}`：立即就位（M1 语义不变）+ 前端跟随，日程翻段后自动失效 |
-| POST | `/world/report` | 前端到达上报 `{npc, grid}`：只更新位置+日志，**不写记忆**（防移动噪音；同室观察记忆留给 M2.3） |
+| POST | `/world/goto` | 指派目的地 `{npc, map_id, room_id}`，也接受原有的 `{npc, area}`。当前地点随实际走动更新 |
+| POST | `/world/report` | 上报实际位置 `{npc, map_id, room_id}`，更新世界中的地点；兼容旧单图客户端的 `{npc, grid}` |
 | POST | `/chat` | 玩家↔NPC 对话 `{npc, message}`（M4 扩展基础） |
 
 前端可视化遗忘面板的数据源就是 `/npcs/{name}/memory` 的 `forgotten` 数组
@@ -399,10 +354,9 @@ M3 迁移路线: conversation.py 的每个步骤（opener/speak/assess/memory/re
 遗忘过程（公式/阈值/压缩）正是课程要**展示**的东西，黑盒组件无法演示。
 自研实现全部白盒：`memory.py` 一个文件 375 行，每个数字有出处。
 
-### 11.3 为什么 NPC 位置是"逻辑概念"？
-移动是前端（Godot）的事。后端只认 `npc_area` 字典；M1 用 `set_area()` 传送 +
-`co_located_pairs()` 相遇判定。M3 调度器只需要在这个判定上加循环即可，
-前端接入后把 `goto` 换成接收移动事件。
+### 11.3 如何区分当前位置和日程目标
+
+后端提供目的地，Godot 把它分解为各楼层的行走段，并用实际地板判断角色位置。后端单独保存行走过程中上报的地点。NPC 经过走廊或楼梯时，原定目的地仍然有效。
 
 ### 11.4 离线兜底（答辩保险）
 LLM 挂了/没 key 时: 说话 → 用人格卡 example_lines 随机兜底；
@@ -416,8 +370,8 @@ fastapi/uvicorn（接口）、openai（SDK）、pydantic（校验）、python-do
 ## 12. 扩展指南（接手后往哪加）
 
 1. **加角色**: personas/ 加 JSON → 完成（关系/日程/秘密全在卡里）
-2. **加区域**: 后端 `world.py` `AREAS` 加一项；前端则改 `room_overrides.json`
-   （虚拟墙/改名）后重跑提取器，流程见 §6.4，区域一览见 §6.6
+2. **加区域**：在对应的地图中绘制独立地板层，登记到该楼层的 `manifest.json` 并重建网格。为角色安排目的地时，使用该楼层和房间的编号。
+
 3. **加场景**: scripts/run_demo.py 照抄一个"场景块"（goto + inject_event +
    run_conversation）；或运行时 `POST /conversation`
 4. **调遗忘速度**: config.py `MEMORY.half_life_minutes`（默认 300，越小忘越快）、
@@ -427,15 +381,9 @@ fastapi/uvicorn（接口）、openai（SDK）、pydantic（校验）、python-do
 6. **玩家模式 M4**: 现有 `POST /chat` 是最小实现；扩展成玩家加入世界
    （persona 生成 + 关系初始化 + NPC 可主动找玩家 = 中断机制，届时用
    LangGraph `interrupt()`）
-7. ✅ **前端接入（M2.2 已完成）**: `frontend/scripts/api_client.gd`（autoload）每秒
-   GET `/world` 取各 NPC 的 `target_grid` → 与 `npc.goal_room` 不同才调
-   `go_to_room()`（不打断行走中的人）；到达 POST `/world/report` 上报**真实位置**
-   （只更新事实不写记忆，已确认决策）；连续 3 次失败自动回退本地演示日程，
-   后端恢复后自动切回。后端侧：`world.py` 加 `GRID_OF` 映射表（语义区域→R##，
-   ★后续同学只改这张表★）+ 惰性 `target_area()`（显式指派 > 日程，指派随日程
-   翻段自动失效）+ `report_arrival()`（几何 id 反查语义 id 去抖）。
-   `/npcs/{name}/memory` 拉取与 WebSocket（`/ws/events`）在 M3 面板阶段再加
-8. **前端地图/动画再生成**: 见 §6.4 管线命令；改完用 §7.4 的命令行冒烟测试回归
+7. **联调寻路**：调用 `POST /world/goto` 指派实际目的地。例如 `{"npc":"周冲","map_id":"jishilou_floor4","room_id":"R05"}` 会让他前往四楼学术讲座教室。查看 `GET /world` 可分别核对当前位置和目的地。
+
+8. **前端地图/动画再生成**: 见 §6.2 和地图交接；改完用 §7.4 的命令行冒烟测试回归
 
 ## 13. 常见问题排查
 
@@ -453,7 +401,7 @@ fastapi/uvicorn（接口）、openai（SDK）、pydantic（校验）、python-do
 | Godot 打不开工程/弹升级提示 | 引擎版本与排错见 §7.5（"将修改为 Godot 4.7"弹窗点确认即可） |
 | Godot 运行报 SCRIPT ERROR | 看错误行的脚本名+行号；若是资源路径问题先删 `frontend/.godot/` 缓存重新导入 |
 | 前端看不到任何 NPC | 查 Output 面板是否打印 `[Main] 已生成 10 个 NPC`；没有则 `data/npc_roster.json` 路径/JSON 被改坏 |
-| 前端"已连接后端"但 NPC 不挪窝 | 后端日程没翻段：`target_grid` 按人格卡 `schedule` 时刻表**惰性**计算，时间不跨段目标不变（前端 WANDER 在房内闲逛是正常的）；可 `POST /world/advance` 快进触发翻段 |
+| 前端"已连接后端"但 NPC 不挪窝 | 后端日程没翻段：目的地按人格卡 `schedule` 时刻表**惰性**计算，时间不跨段目标不变（前端 WANDER 在房内闲逛是正常的）；可 `POST /world/advance` 快进触发翻段 |
 | room_id_at 等按数字键查字典查不到 | JSON 解析出的数字是 **float**，GDScript 字典里 `3.0` 和 `3` 是不同键——跨 JSON/代码的数字键必须显式 `int()`（M2.2 实际踩坑，详见 game_data.gd `room_id_at` 注释） |
 
 

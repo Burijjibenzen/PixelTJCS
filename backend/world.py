@@ -1,16 +1,8 @@
-"""游戏世界 —— 时钟、区域地图、NPC 所在位置、事件总线
+"""校园世界的时钟、实际位置、日程目标和事件。"""
 
-M1 范围说明:
-    NPC 自由移动暂不做（那是 Godot 前端的活），NPC 的"位置"是逻辑概念，
-    由世界事件/调度显式设置（set_area）。co_located_pairs() 已实现
-    "同区域判定"，是 M3 自动调度器的地基 —— 届时循环:
-        tick → 移动意图 → 同区域相遇 → 触发对话。
-
-时间加速: 游戏时间用 float 分钟表示；演示脚本一次快进 N 天来展示记忆衰减。
-"""
-
-import os
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from backend.config import WORLD
@@ -19,68 +11,72 @@ from backend.persona import PersonaCard
 
 log = get_logger(__name__)
 
-# ----------------------------------------------------------------------
-# 区域地图（覆盖纪事楼 3F/4F、智信馆 4F；新增区域直接往里加即可）
-# kind: lab=实验室  office=办公室  public=公共区  facility=设施
-# ----------------------------------------------------------------------
-AREAS: Dict[str, dict] = {
-    a["id"]: a
-    for a in [
-        {"id": "j3_lab", "name": "纪事楼3F·实验室", "building": "纪事楼", "floor": 3, "kind": "lab"},
-        {"id": "j3_pantry", "name": "纪事楼3F·茶水间", "building": "纪事楼", "floor": 3, "kind": "public"},
-        {"id": "j3_wc", "name": "纪事楼3F·洗手间", "building": "纪事楼", "floor": 3, "kind": "facility"},
-        {"id": "j4_lab", "name": "纪事楼4F·实验室", "building": "纪事楼", "floor": 4, "kind": "lab"},
-        {"id": "j4_meeting", "name": "纪事楼4F·会议室", "building": "纪事楼", "floor": 4, "kind": "public"},
-        {"id": "j4_wc", "name": "纪事楼4F·洗手间", "building": "纪事楼", "floor": 4, "kind": "facility"},
-        {"id": "zx4_yan", "name": "智信馆4F·严老师办公室", "building": "智信馆", "floor": 4, "kind": "office"},
-        {"id": "zx4_wen", "name": "智信馆4F·温老师办公室", "building": "智信馆", "floor": 4, "kind": "office"},
-        {"id": "zx4_qian", "name": "智信馆4F·教务办公室", "building": "智信馆", "floor": 4, "kind": "office"},
-        {"id": "zx4_hall", "name": "智信馆4F·大厅", "building": "智信馆", "floor": 4, "kind": "public"},
-    ]
+J3 = "jishilou_floor3"
+J4 = "jishilou_floor4"
+ZX2 = "zhixinguan_floor2"
+FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
+
+# 人格卡、旧演示指令和已保存的记忆沿用这些地点名。最后一列只给单层旧客户端。
+# 展示名、当前位置与新客户端的寻路目标一律取真实楼层清单。
+LEGACY_LOCATIONS = {
+    "j3_lab": (J3, "R03", "R03"),
+    "j3_pantry": (J3, "R07", "R07"),
+    "j3_wc": (J3, "R09", "R12"),
+    "j4_lab": (J4, "R03", "R05"),
+    "j4_meeting": (J4, "R05", "R06"),
+    "j4_wc": (J4, "R09", "R12"),
+    "zx4_hall": (ZX2, "zx2_corridor", "R01"),
 }
 
-# ----------------------------------------------------------------------
-# M2.2 语义区域 → 前端几何区域(R##) 映射表 ★后续同学只改这一张表★
-#
-# 背景: Godot 前端目前只有"纪事楼 3F"一张图（几何区域 R01~R13，见
-#   frontend/assets/map/jishilou_floor3/rooms.json，房间名可随意改，
-#   编号稳定）。而人格卡日程可能把角色派往 4F / 智信馆的语义区域。
-# 作用: 把语义区域"投影"到 3F 的对应房间，让前端永远有路可走——
-#   单楼层演示期跨楼日程照样生效；M4 接入真实多楼层地图后删除本表即可。
-# 设计原则:
-#   - 键 = AREAS 的语义 id（人格卡/日程/事件都用它，不许改）
-#   - 值 = 前端 rooms.json 的区域编号 R##（改房间名不影响映射）
-#   - 一对多允许（多个洗手间可投影到同一间），反查取表序第一个
-# ----------------------------------------------------------------------
-GRID_OF: Dict[str, str] = {
-    "j3_lab": "R03",      # 3F 实验室     → R03 J3实验室（名字直接对应）
-    "j3_pantry": "R07",   # 3F 茶水间     → R07 茶水间（名字直接对应）
-    "j3_wc": "R12",       # 3F 洗手间     → R12 小隔间（图上无明确洗手间，借用）
-    "j4_lab": "R05",      # 4F 实验室     → R05 机房C（另一间实验室）
-    "j4_meeting": "R06",  # 4F 会议室     → R06 左下开放区（最大公共区）
-    "j4_wc": "R12",       # 4F 洗手间     → R12 小隔间（与 3F 合并）
-    "zx4_yan": "R09",     # 严老师办公室  → R09 中部小间（独立小间当办公室）
-    "zx4_wen": "R10",     # 温老师办公室  → R10 楼道门厅（次独立空间）
-    "zx4_qian": "R02",    # 教务办公室    → R02 机房B（借用）
-    "zx4_hall": "R01",    # 智信馆大厅    → R01 走廊与开放区（完美对应）
-}
-DEFAULT_GRID = "R01"  # 映射缺项时的兜底投影（走廊，四通八达不会卡死）
+# 教师和教务的原日程继续引用办公室别名。实际落点和 Godot 出生位置共用角色名册。
+def load_offices() -> Dict[str, Tuple[str, str, str]]:
+    old_grids = {"zx4_yan": "R09", "zx4_wen": "R10", "zx4_qian": "R02"}
+    roster = json.loads((FRONTEND_DIR / "data/npc_roster.json").read_text(encoding="utf-8-sig"))
+    offices = {}
+    for person in roster["npcs"]:
+        alias = person.get("office_alias")
+        if alias:
+            offices[alias] = (person.get("home_map", J3), person["home"], old_grids[alias])
+    if offices.keys() != old_grids.keys():
+        raise ValueError("npc_roster.json 中的教师、教务办公室别名与原日程不一致")
+    return offices
+
+
+LEGACY_LOCATIONS.update(load_offices())
+
+
+def load_rooms() -> Dict[Tuple[str, str], dict]:
+    map_dir = FRONTEND_DIR / "assets/map"
+    rooms = {}
+    for map_id, building, floor in ((J3, "济事楼", 3), (J4, "济事楼", 4), (ZX2, "智信馆", 2)):
+        manifest = json.loads((map_dir / map_id / "manifest.json").read_text(encoding="utf-8-sig"))
+        for room in manifest["rooms"]:
+            rid = room["id"]
+            rooms[map_id, rid] = {
+                "id": f"{map_id}/{rid}", "map_id": map_id, "room_id": rid,
+                "building": building, "floor": floor, "kind": room["type"],
+                "name": f"{manifest['name']}·{room['name']}", "aliases": [],
+            }
+    for alias, (map_id, rid, _) in LEGACY_LOCATIONS.items():
+        rooms[map_id, rid]["aliases"].append(alias)
+    return rooms
+
+
+ROOMS = load_rooms()
+AREAS = {area["id"]: area for area in ROOMS.values()}
+for alias, (map_id, rid, _) in LEGACY_LOCATIONS.items():
+    AREAS[alias] = ROOMS[map_id, rid]
 
 
 def grid_of(area_id: str) -> str:
-    """语义区域 id → 前端几何区域 id（R##）。缺项投影到 DEFAULT_GRID。"""
-    return GRID_OF.get(area_id, DEFAULT_GRID)
-
-
-def area_of_grid(grid_id: str) -> Optional[str]:
-    """前端几何区域 id(R##) → 语义区域 id（多对一时取表序第一个）。
-
-    返回 None 表示前端上报了映射表里没有的几何区域（非法/未投影）。
-    """
-    for aid, gid in GRID_OF.items():
-        if gid == grid_id and aid in AREAS:
-            return aid
-    return None
+    """单层旧客户端的投影；多层客户端直接使用 map_id 和 room_id。"""
+    if area_id in LEGACY_LOCATIONS:
+        return LEGACY_LOCATIONS[area_id][2]
+    area = AREAS[area_id]
+    aliases = area["aliases"]
+    if aliases:
+        return LEGACY_LOCATIONS[aliases[0]][2]
+    return area["room_id"] if area["map_id"] == J3 else "R01"
 
 
 @dataclass
@@ -135,8 +131,8 @@ class World:
     # ---------------- 位置 ----------------
     def set_area(self, name: str, area_id: str) -> bool:
         """把角色放到某区域（M1 的"传送"，未来替换为 Godot 驱动的移动）。"""
-        if area_id not in AREAS:
-            log.error("未知区域: %s", area_id)
+        if name not in self.personas or area_id not in AREAS:
+            log.error("未知角色或区域: %s, %s", name, area_id)
             return False
         old = self.npc_area.get(name, "（未注册）")
         self.npc_area[name] = area_id
@@ -151,7 +147,7 @@ class World:
         """找出所有"同区域"的角色对 —— M3 自动调度器的相遇检测地基。"""
         by_area: Dict[str, List[str]] = {}
         for name, area in self.npc_area.items():
-            by_area.setdefault(area, []).append(name)
+            by_area.setdefault(AREAS[area]["id"], []).append(name)
         pairs = []
         for area, names in by_area.items():
             for i in range(len(names)):
@@ -184,7 +180,7 @@ class World:
             self.npc_area[name] = self.schedule_area(card, self.clock.now)
 
     # ---------------- 指派 / 目标计算（M2.2 前端联动核心） ----------------
-    def assign_override(self, name: str, area_id: str) -> None:
+    def assign_override(self, name: str, area_id: str) -> bool:
         """记录显式指派（/world/goto 转发而来），优先于日程。
 
         失效规则: 当人格卡日程翻到下一个时间段（schedule_area 结果变化），
@@ -192,11 +188,12 @@ class World:
         """
         if name not in self.personas or area_id not in AREAS:
             log.error("指派无效: %s → %s", name, area_id)
-            return
+            return False
         self.override_area[name] = area_id
         self.override_slot[name] = self.schedule_area(self.personas[name], self.clock.now)
         log.info("🎯 %s 被指派前往 %s（日程翻段后自动失效）",
                  name, AREAS[area_id]["name"])
+        return True
 
     def target_area(self, name: str) -> str:
         """角色此刻应前往的区域：显式指派 > 人格卡日程（惰性计算，无后台线程）。
@@ -215,19 +212,37 @@ class World:
                 return ov
         return self.schedule_area(self.personas[name], self.clock.now)
 
-    def report_arrival(self, name: str, grid_id: str) -> Tuple[bool, str]:
-        """前端到达上报（M2.2）：几何区域 id → 语义 id，只更新位置+日志。
-
-        ⚠️ 决策（已确认）：到达**不写记忆**——10 人频繁移动会把记忆库
-        刷成噪音；"和谁同处一室"的观察记忆留给 M2.3 相遇/视野事件时写。
-        """
+    def report_arrival(self, name: str, grid_id: Optional[str] = None,
+                       map_id: Optional[str] = None, room_id: Optional[str] = None) -> Tuple[bool, str]:
+        """到达时只更新实际位置；经过楼梯或走廊不会覆盖日程或目的地。"""
         if name not in self.npc_area:
             return False, f"未知角色: {name}"
-        if grid_of(self.npc_area[name]) == grid_id:
-            return True, "already"  # 投影相同 → 去抖，不重复刷日志
-        area_id = area_of_grid(grid_id)
-        if area_id is None:
-            return False, f"未知几何区域（不在 GRID_OF 投影内）: {grid_id}"
+        current = self.npc_area[name]
+        target = self.target_area(name)
+        if map_id is not None or room_id is not None:
+            room = ROOMS.get((map_id, room_id))
+            if room is None:
+                return False, f"未知楼层或房间: {map_id}/{room_id}"
+            area_id = target if AREAS[target]["id"] == room["id"] else room["id"]
+            if AREAS[current]["id"] == room["id"]:
+                return True, "already"
+        else:
+            # 只有旧版前端才上报裸格号。先匹配目标，避免两个楼层同号时误选。
+            if not grid_id:
+                return False, "需要 map_id 和 room_id，或旧版 grid"
+            if grid_of(target) == grid_id:
+                area_id = target
+            elif grid_of(current) == grid_id:
+                return True, "already"
+            else:
+                area_id = next((a for a, (_, _, g) in LEGACY_LOCATIONS.items() if g == grid_id), None)
+                if area_id is None:
+                    room = ROOMS.get((J3, grid_id))
+                    if room is None:
+                        return False, f"未知旧版区域: {grid_id}"
+                    area_id = room["id"]
+            if AREAS[current]["id"] == AREAS[area_id]["id"]:
+                return True, "already"
         self.set_area(name, area_id)
         return True, "moved"
 
@@ -260,23 +275,15 @@ class World:
 
     # ---------------- 快照（给前端 / API） ----------------
     def snapshot(self) -> dict:
-        """世界快照。M2.2 起新增 grid / target_grid 字段供 Godot 寻路：
-
-        - grid:        角色当前逻辑位置投影到前端的几何区域（R##）
-        - target_grid: 角色此刻应前往的几何区域（指派 > 日程，惰性计算）
-        旧字段（area/area_name/events）保持不变，M1 调用方零影响。
-        """
-        return {
-            "time": self.clock.fmt(),
-            "npcs": {
-                name: {
-                    "area": area,
-                    "area_name": AREAS[area]["name"] if area in AREAS else area,
-                    "grid": grid_of(area),
-                    "target_grid": grid_of(self.target_area(name)),
-                }
-                for name, area in self.npc_area.items()
-            },
-            "events": self.events[-20:],  # 最近 20 条
-        }
-
+        """每名角色分别给出实际地点和日程/指派目的地。"""
+        npcs = {}
+        for name, area_id in self.npc_area.items():
+            target_id = self.target_area(name)
+            current, target = AREAS[area_id], AREAS[target_id]
+            npcs[name] = {
+                "area": area_id, "area_name": current["name"],
+                "map_id": current["map_id"], "room_id": current["room_id"],
+                "target_map_id": target["map_id"], "target_room_id": target["room_id"],
+                "grid": grid_of(area_id), "target_grid": grid_of(target_id),
+            }
+        return {"time": self.clock.fmt(), "npcs": npcs, "events": self.events[-20:]}

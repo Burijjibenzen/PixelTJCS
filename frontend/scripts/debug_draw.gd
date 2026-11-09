@@ -1,51 +1,61 @@
 extends Node2D
-## 区域调试视图: 独立节点, 在场景树中位于 Map/Actors 之后 -> 绘制在最上层。
-## (曾画在 main 根节点: 根节点先于子节点渲染, 调试框被地图瓦片完全遮挡)
+## 区域与门格只在切楼时重绘，NPC 目标线随角色移动。
 
 var enabled := false
 var npcs: Array = []
+var map_id := Game.FLOOR3:
+	set(value):
+		map_id = value
+		$Regions.queue_redraw()
+		queue_redraw()
 
+@onready var regions := $Regions as Node2D
 
-func set_enabled(v: bool) -> void:
-	enabled = v
-	visible = v
-	queue_redraw()
+func _ready() -> void:
+	regions.draw.connect(_draw_regions)
 
+func setup(actors: Array) -> void:
+	npcs = actors
+	regions.queue_redraw()
 
-## main.gd 装配后注入 NPC 引用(画目标线用)
-func setup(npcs: Array) -> void:
-	npcs = npcs
-
+func set_enabled(on: bool) -> void:
+	enabled = on
+	visible = on
+	if on:
+		regions.queue_redraw()
+		queue_redraw()
 
 func _process(_delta: float) -> void:
 	if enabled:
-		queue_redraw()  # 目标线随 NPC 移动实时刷新
+		queue_redraw()
 
-
-func _draw() -> void:
+func _draw_regions() -> void:
+	if not enabled:
+		return
+	var floor_info: Dictionary = Game.floor_data[map_id]
 	var colors := [Color(0.3, 0.7, 1.0), Color(1.0, 0.6, 0.3),
 		Color(0.4, 1.0, 0.5), Color(1.0, 0.9, 0.3)]
 	var font := ThemeDB.fallback_font
-	var ci := 0
-	for rid in Game.rooms:
-		var r: Dictionary = Game.rooms[rid]
-		var col: Color = colors[ci % colors.size()]
-		ci += 1
-		for cell: Vector2i in Game.floor_cells[rid]:
-			draw_rect(Rect2(Game.world_corner(cell), Vector2.ONE * Game.tile_size), Color(col.r, col.g, col.b, 0.28))
-		var tl := Game.nav_world_of(rid)
+	var index := 0
+	for rid: String in floor_info.rooms:
+		var r: Dictionary = floor_info.rooms[rid]
+		var color: Color = colors[index % colors.size()]
+		index += 1
+		for cell: Vector2i in floor_info.floor_cells[rid]:
+			var rect := Rect2(Game.world_corner(cell, map_id), Vector2.ONE * Game.tile_size)
+			regions.draw_rect(rect, Color(color, 0.28))
+		var pos := Game.nav_world_of(rid, map_id)
 		var label := "%s %s [%s]" % [rid, r.name, r.type]
-		draw_string(font, tl + Vector2(5, 19), label,
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0, 0, 0, 0.9))
-		draw_string(font, tl + Vector2(4, 18), label,
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 1))
-	for cell: Vector2i in Game.door_cells:
-		draw_rect(Rect2(Game.world_corner(cell) + Vector2(3, 3), Vector2(10, 10)), Color(1, 0.9, 0.2, 0.65))
-	# NPC 目标线加粗 + 终点圆点
-	for npc in npcs:
-		if not is_instance_valid(npc):
+		regions.draw_string(font, pos + Vector2(5, 19), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.BLACK)
+		regions.draw_string(font, pos + Vector2(4, 18), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
+	for cell: Vector2i in floor_info.door_cells:
+		var pos := Game.world_corner(cell, map_id)
+		regions.draw_rect(Rect2(pos + Vector2(3, 3), Vector2(10, 10)), Color(1, 0.9, 0.2, 0.65))
+
+func _draw() -> void:
+	for npc: NPC in npcs:
+		if npc.map_id != map_id or npc.path_i >= npc.path.size():
 			continue
-		if npc.path.size() > npc.path_i:
-			var end: Vector2 = npc.path[npc.path.size() - 1]
-			draw_line(npc.global_position, end, Color(1, 1, 0, 0.6), 3.0)
-			draw_circle(end, 5.0, Color(1, 1, 0, 0.9))
+		var end := npc.path[npc.path.size() - 1]
+		draw_line(npc.global_position, end, Color(1, 1, 0, 0.6), 3.0)
+		draw_circle(end, 5.0, Color(1, 1, 0, 0.9))

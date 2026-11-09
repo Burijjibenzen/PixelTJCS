@@ -96,9 +96,10 @@ class GameService:
             self.world.assign_override(npc_name, area_id)
         return ok
 
-    def report_arrival(self, npc_name: str, grid_id: str) -> Tuple[bool, str]:
+    def report_arrival(self, npc_name: str, grid_id: Optional[str] = None,
+                       map_id: Optional[str] = None, room_id: Optional[str] = None) -> Tuple[bool, str]:
         """前端到达上报（M2.2）：只更新位置+日志，不写记忆（见 world.report_arrival）。"""
-        return self.world.report_arrival(npc_name, grid_id)
+        return self.world.report_arrival(npc_name, grid_id, map_id, room_id)
 
     def chat_with_npc(self, npc_name: str, message: str) -> Optional[dict]:
         """玩家 ↔ NPC 单轮对话（玩家模式的最小实现，M4 扩展）。"""

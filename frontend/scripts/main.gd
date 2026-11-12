@@ -42,6 +42,10 @@ func _ready() -> void:
 	print("[Main] 已生成 %d 个 NPC" % npcs.size())
 	$DebugDraw.setup(npcs)
 	_select_floor(0)
+	# M3: 新增独立社交 UI；地图和日程逻辑保持原样。
+	var social = load("res://scripts/social_ui.gd").new()
+	social.setup(npcs)
+	add_child(social)
 	ApiClient.setup(npcs)
 	ApiClient.online_changed.connect(_on_online_changed)
 	$UI/BtnAdv1h.pressed.connect(func() -> void: ApiClient.advance_time(60))

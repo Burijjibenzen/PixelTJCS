@@ -7,6 +7,10 @@ signal floor_changed(npc)
 enum S { IDLE, WANDER, WALK }
 const SPEED := 55.0
 
+# M3: 后端生成对话和本地气泡播放期间暂停移动，保留原路线供结束后继续。
+var social_busy := false
+var social_playing := false
+
 var npc_id := ""
 var npc_name := "?"
 var home_map_id := Game.FLOOR3
@@ -71,6 +75,11 @@ func _start_section() -> void:
 	state = S.WALK
 
 func _physics_process(delta: float) -> void:
+	# M3: 不调用 _idle()，避免清掉正在行走的路线。
+	if social_busy or social_playing:
+		velocity = Vector2.ZERO
+		_play("idle")
+		return
 	if state == S.IDLE:
 		_wander_timer -= delta
 		if _wander_timer <= 0.0:

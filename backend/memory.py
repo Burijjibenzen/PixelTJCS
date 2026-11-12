@@ -122,6 +122,12 @@ class MemoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_mem_forgotten ON memories(forgotten)"
             )
 
+    def get_by_id(self, memory_id):
+        """M3: 原子步骤重试前读取稳定 ID。"""
+        with self._connect() as conn:
+            row = conn.execute('SELECT * FROM memories WHERE id=?', (memory_id,)).fetchone()
+        return self._row_to_item(row) if row else None
+
     # ---------------- 写入 ----------------
     def add(
         self,
@@ -134,10 +140,11 @@ class MemoryStore:
         emotion: str = "neutral",
         participants: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
+        memory_id: Optional[str] = None,  # M3: 检查点恢复使用稳定 ID。
     ) -> MemoryItem:
         """写入一条记忆；自动计算内容向量（失败则 None，检索降级为关键词）。"""
         item = MemoryItem(
-            id=uuid.uuid4().hex[:12],
+            id=memory_id or uuid.uuid4().hex[:12],
             agent=agent,
             content=content,
             type=type,
@@ -153,7 +160,7 @@ class MemoryStore:
 
         with self._connect() as conn:
             conn.execute(
-                """INSERT INTO memories (id, agent, content, type, importance,
+                """INSERT OR IGNORE INTO memories (id, agent, content, type, importance,
                        emotion, game_time, location, participants, embedding,
                        tags, forgotten, forgotten_at, forget_reason, reflected)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,0,0,'',0)""",

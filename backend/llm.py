@@ -33,6 +33,10 @@ class LLMClient:
 
     def __init__(self, cfg=CFG):
         self.cfg = cfg
+        # M3: 未配置 key 时立即启用已有离线兜底，避免 SDK 初始化失败或长时间网络重试。
+        self._client = None
+        if not cfg.api_key:
+            return
         # trust_env=False: 无视 HTTP_PROXY 等代理环境变量。
         # 教训: 校园网关对代理出口 IP 有风控，走 Clash 会被拒
         # （403 "当前网络环境不支持"），必须直连。
@@ -64,6 +68,9 @@ class LLMClient:
           1) content 为 null 且 finish_reason=length → token 不够，加倍重试一次
           2) 网络异常 → 记录日志后返回 None
         """
+        # M3: 离线模式复用上层预设台词/记忆兜底。
+        if self._client is None:
+            return None
         model = model or self.cfg.chat_model
         max_tokens = max_tokens or self.cfg.max_tokens
         temperature = self.cfg.temperature if temperature is None else temperature
@@ -154,6 +161,9 @@ class LLMClient:
         if not texts:
             return []
         try:
+            # M3: 无 key 时使用原有关键词检索降级。
+            if self._client is None:
+                return None
             resp = self._client.embeddings.create(
                 model=self.cfg.embed_model, input=texts
             )

@@ -6,10 +6,18 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 
 # OpenAI 官方 SDK：连接同济 AGI 网关（OpenAI 兼容协议）的唯一传输层
-openai>=1.40.0
+openai>=1.40.0,<2
 
 # 数据模型校验（LLM 结构化输出的 schema 定义也用它）
 pydantic>=2.7.0
 
 # 读取项目根目录的 .env 配置
 python-dotenv>=1.0.0
+
+# M3: LangGraph 编排/SQLite checkpoint/WebSocket，版本锁定便于组员复现。
+langgraph==1.2.20
+langgraph-checkpoint-sqlite==3.1.3
+langgraph-checkpoint==4.3.1
+langchain-core==1.8.0
+websockets==17.4
+httpx==0.28.1

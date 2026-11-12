@@ -1,0 +1,2 @@
+# M3: 兼容旧安装命令，依赖统一在 requirements.txt。
+-r requirements.txt

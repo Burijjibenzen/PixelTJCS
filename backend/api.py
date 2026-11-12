@@ -13,10 +13,11 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.logger import get_logger
-from backend.service import GameService
+# M3: HTTP 使用独立社交服务；原 GameService 保留给命令行演示。
+from backend.social import SocialService as GameService, install
 from backend.world import ROOMS
 
 log = get_logger(__name__)
@@ -31,7 +32,7 @@ def get_service() -> GameService:
     if _service is None:
         with _service_lock:
             if _service is None:
-                _service = GameService(fresh_db=True)
+                _service = GameService(fresh_db=False)  # M3: 重启保留记忆、八卦和关系
     return _service
 
 
@@ -52,7 +53,7 @@ class ConversationReq(BaseModel):
 
 
 class AdvanceReq(BaseModel):
-    minutes: float  # 推进多少游戏分钟（演示遗忘: 一次推 3 天 = 4320）
+    minutes: float = Field(gt=0, le=43200)  # M3: 禁止倒退时间破坏冷却/遗忘。 推进多少游戏分钟（演示遗忘: 一次推 3 天 = 4320）
 
 
 class GotoReq(BaseModel):
@@ -96,11 +97,17 @@ def npc_list():
 
 
 @app.get("/npcs/{name}/memory")
-def memory_panel(name: str):
+def memory_panel(name: str, view: Optional[str] = None, snapshot_id: Optional[int] = None):
     """个人记忆面板: 活跃记忆 / 遗忘档案 / 洞察（遗忘可视化的数据源）。"""
-    panel = get_service().memory_panel(name)
+    panel = get_service().memory_panel(name, snapshot_id=snapshot_id)
     if panel is None:
         raise HTTPException(404, f"角色不存在: {name}")
+    # M3: view 查询按 DESIGN §8；不带 view 时兼容原三组面板。
+    if view is not None:
+        section = {'active': 'active', 'forgotten': 'forgotten', 'reflection': 'reflections'}.get(view)
+        if section is None:
+            raise HTTPException(422, 'view 必须是 active / forgotten / reflection')
+        return dict(npc=name, items=panel[section], as_of=panel.get('as_of'))
     return panel
 
 
@@ -170,3 +177,6 @@ def chat_with_npc(req: ChatReq):
     if result is None:
         raise HTTPException(404, f"角色不存在: {req.npc}")
     return result
+
+# M3: 注册社交事件/控制接口并随应用启动和关闭调度器。
+install(app, get_service)

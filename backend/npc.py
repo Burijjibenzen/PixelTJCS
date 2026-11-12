@@ -9,6 +9,7 @@
 本模块只提供"单个 NPC 的原子能力"，方便单元测试与未来迁入 LangGraph 节点。
 """
 
+import uuid
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -110,9 +111,14 @@ class NPCAgent:
 
     # ---------------- 记忆写入 ----------------
     def save_dialogue_memory(
-        self, transcript: List[dict], other: str, game_time: float, location: str
+        self, transcript: List[dict], other: str, game_time: float, location: str, memory_id=None
     ):
         """对话结束：以我的视角评定并保存这条对话记忆（LLM 失败则降级兜底）。"""
+        # M3: 恢复图节点时复用已经提交的记忆，避免重复调用模型和写库。
+        if memory_id:
+            existing = self.memory.get_by_id(memory_id)
+            if existing:
+                return existing
         transcript_text = "\n".join(f"{t['speaker']}：{t['text']}" for t in transcript)
         assess = self.llm.chat_json(
             f"你是校园角色「{self.name}」。刚刚你和「{other}」谈了一次话。",
@@ -131,6 +137,7 @@ class NPCAgent:
             agent=self.name,
             content=assess.content,
             type="dialogue",
+            memory_id=memory_id,
             importance=assess.importance,
             emotion=assess.emotion,
             game_time=game_time,
@@ -166,6 +173,12 @@ class NPCAgent:
         if pending < MEMORY.reflect_every:
             return False
         batch = self.memory.get_unreflected(self.name, limit=MEMORY.reflect_every)
+        # M3: 反思写入后进程中断时，用来源记忆集合定位已有洞察，恢复只补标记。
+        reflection_id = uuid.uuid5(uuid.NAMESPACE_URL,
+            self.name + ':' + ','.join(sorted(m.id for m in batch))).hex
+        if self.memory.get_by_id(reflection_id):
+            self.memory.mark_reflected(self.name, [m.id for m in batch])
+            return True
         batch_text = "\n".join(f"- {m.content}" for m in batch)
         insight = self.llm.chat_json(
             f"你是校园角色「{self.name}」。以下是你最近的一段零散记忆。",
@@ -180,6 +193,7 @@ class NPCAgent:
             agent=self.name,
             content=f"（洞察）{insight.insight}",
             type="reflection",
+            memory_id=reflection_id,
             importance=insight.importance,
             emotion="neutral",
             game_time=self.world.clock.now,

@@ -18,6 +18,7 @@ var last_world := {}         # 最近一次 /world 快照(日程面板数据源)
 var _npcs: Array = []        # main.gd 装配后注入的 NPC 引用
 var _poll_timer := 0.5       # 开局稍等场景就绪
 var _fail_count := 0
+var _last_stream_world := -100.0  # M3: WebSocket 世界快照健康时不再发重复 HTTP 查询。
 var _polling := false        # 轮询单飞行保护(get_http_client_status 有状态间隙, 不可靠)
 var _http: HTTPRequest       # 轮询专用
 var _http_post: HTTPRequest  # 上报专用(单飞行 + 队列, 防并发)
@@ -55,6 +56,8 @@ func _process(delta: float) -> void:
 
 
 func _poll() -> void:
+	if Time.get_ticks_msec() / 1000.0 - _last_stream_world < 5.0:
+		return
 	if _polling:
 		return  # 上一发还没回来(超时保护)
 	_polling = true
@@ -66,8 +69,13 @@ func _on_poll(result: int, code: int, _headers: PackedStringArray,
 		body: PackedByteArray) -> void:
 	_polling = false
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		if Time.get_ticks_msec() / 1000.0 - _last_stream_world < 5.0:
+			return
 		_fail_count += 1
 		if _fail_count >= FAIL_LIMIT and backend_online:
+			# M3: 断线释放后端锁，本地气泡自行结束。
+			for npc in _npcs:
+				npc.social_busy = false
 			backend_online = false
 			print("[ApiClient] 后端不可达(连续 %d 次), 回退本地演示日程" % FAIL_LIMIT)
 			online_changed.emit(false)
@@ -75,6 +83,16 @@ func _on_poll(result: int, code: int, _headers: PackedStringArray,
 	var data = JSON.parse_string(body.get_string_from_utf8())
 	if not data is Dictionary or not data.get("npcs") is Dictionary:
 		return
+	_apply_world(data)
+
+# M3: HTTP 查询与 WS 推送复用一次状态应用，不能让旧 HTTP 超时覆盖新快照。
+func apply_stream_world(data: Dictionary) -> void:
+	if not data.get("npcs") is Dictionary:
+		return
+	_last_stream_world = Time.get_ticks_msec() / 1000.0
+	_apply_world(data)
+
+func _apply_world(data: Dictionary) -> void:
 	_fail_count = 0
 	backend_time = str(data.get("time", ""))
 	last_world = data
@@ -90,6 +108,8 @@ func _on_poll(result: int, code: int, _headers: PackedStringArray,
 		var info: Dictionary = data["npcs"].get(npc.npc_name, {})
 		if info.is_empty():
 			continue
+		# M3: 只同步忙碌状态，移动仍使用原有寻路接口。
+		npc.social_busy = bool(info.get("busy", false))
 		var target_map := str(info.get("target_map_id", Game.FLOOR3))
 		var target_room := str(info.get("target_room_id", info.get("target_grid", "")))
 		if target_room != "" and (target_map != npc.goal_map_id or target_room != npc.goal_room):

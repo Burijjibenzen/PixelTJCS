@@ -96,6 +96,16 @@ func verify() -> void:
 			break
 	if not success:
 		fail("Dynamic library activity never actually arrived");return
+	# 站定后强制重报相同坐标，不能被位置去重缓存永久跳过。
+	subject.set_physics_process(false)
+	var drain_deadline := Time.get_ticks_msec() + 5000
+	while not api._sending_position.is_empty() and Time.get_ticks_msec() < drain_deadline:
+		await process_frame
+	api.report_arrival(subject, true)
+	var packet: Dictionary = api._sending_position if api._sending_position.get("npc", "") == subject.npc_name else api._pending_positions.get(subject.npc_name, {})
+	var local_position: Vector2 = subject.global_position - root.get_node("Game").map_offset(subject.map_id)
+	if packet.is_empty() or not packet.has("x") or not packet.has("y") or Vector2(packet.x, packet.y).distance_to(local_position) > 0.2:
+		fail("Position heartbeat must refresh stationary coordinates in map-local pixels");return
 	if main.get_node_or_null("UI/SchedulePanel") != null:
 		fail("The duplicate fixed schedule panel must be removed");return
 	var profile = social_ui.profile_panel

@@ -108,7 +108,7 @@ class Scheduler:
             if m['area'] is None:
                 m['area']=AREAS[s.world.area_of(m['a'])]['id']
             online=all(now-s.seen.get(n,-100)<SOCIAL.presence_seconds for n in pair)
-            arrived=all(AREAS[s.world.area_of(n)]['id']==m['area'] for n in pair)
+            arrived=all(AREAS[s.world.area_of(n)]['id']==m['area'] for n in pair) and s.nearby(m['a'],m['b'],now,allow_legacy=True)
             if not online or not arrived:
                 m.update(state='moving',detail='等待客户端位置上报' if not online else '前往会面，等待双方抵达')
                 m['travel_seconds']+=elapsed
@@ -128,7 +128,7 @@ class Scheduler:
     def natural(self,now):
         s=self.s
         reserved={n for m in s.active_meetings() for n in (m['a'],m['b'])}
-        candidates=[(a,b,True) for a,b,_ in s.world.co_located_pairs()]
+        candidates=[(a,b,True) for a,b,_ in s.world.co_located_pairs() if s.nearby(a,b,now)]
         # 高关系允许主动找上门，仍由模型决定 move；动作只下发目的地。
         names=list(s.npcs)
         candidates += [(a,b,False) for i,a in enumerate(names) for b in names[i+1:]
@@ -178,7 +178,9 @@ class Scheduler:
         s=self.s;a,b=state['a'],state['b']
         with s.lock:
             valid=not s.paused and s.world.can_chat(a,b)[0]
-            colocated=AREAS[s.world.area_of(a)]['id']==AREAS[s.world.area_of(b)]['id']
+            colocated=s.nearby(a,b,allow_legacy=state['forced'])
+            if not state['forced'] and AREAS[s.world.area_of(a)]['id']==AREAS[s.world.area_of(b)]['id'] and not colocated:
+                valid=False
         return {'valid':valid,'colocated':colocated,'candidate':s.gossip_candidate(a,b) or {}}
 
     def decide(self,state):
@@ -195,7 +197,7 @@ class Scheduler:
             if action=='move' and valid:
                 s.request_meeting(b,a,trigger=state['decision']['intent'])
             if action=='chat':
-                valid=valid and s.valid_pair(a,b)
+                valid=valid and s.valid_pair(a,b) and (state['forced'] or s.nearby(a,b))
             if state['meeting_id'] and (not valid or action!='chat'):
                 m=s.meeting(state['meeting_id'])
                 m.update(state='waiting',detail='条件变化，等待下一次调度')
@@ -205,5 +207,6 @@ class Scheduler:
         s=self.s
         candidate=state['candidate'] if state['decision']['share_gossip'] else {}
         result=s.run_conversation(state['a'],state['b'],state['decision']['intent'],
-                         scheduled=dict(run_id=state['conversation_id'],candidate=candidate,meeting_id=state['meeting_id']))
+                         scheduled=dict(run_id=state['conversation_id'],candidate=candidate,meeting_id=state['meeting_id'],
+                                        require_near=not state['forced']))
         return {'result':result}

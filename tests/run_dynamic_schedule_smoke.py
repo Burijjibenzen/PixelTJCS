@@ -48,6 +48,7 @@ def main():
                 raise RuntimeError('Dynamic schedule Godot integration failed')
             task=service.planner.current_item(subject)
             assert task and task['kind']=='library' and task['phase']=='active'
+            assert service.positions[subject]['area']=='zhixinguan_floor2/zx2_lib'
     finally:
         server.should_exit=True
         if thread.ident is not None:thread.join(timeout=20)

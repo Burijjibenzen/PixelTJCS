@@ -48,6 +48,8 @@ var notice_until := 0.0
 var speed_picker: OptionButton
 var profile_panel
 var profile_hidden: Array[Control] = []
+var _memory_history_view := false
+var _memory_reference_minutes := 0.0
 var drag_handle: Label
 var _dragging := false
 var _drag_offset := Vector2.ZERO
@@ -84,7 +86,9 @@ func _ready() -> void:
 	background.content_margin_top = 12
 	background.content_margin_bottom = 12
 	background.corner_radius_top_left = 8
+	background.corner_radius_top_right = 8
 	background.corner_radius_bottom_left = 8
+	background.corner_radius_bottom_right = 8
 	panel.add_theme_stylebox_override("panel", background)
 	add_child(panel)
 	open.pressed.connect(func(): panel.visible = not panel.visible)
@@ -307,7 +311,7 @@ func _process(delta: float) -> void:
 	var target = ApiClient.last_world.get("social", {}).get("target_minutes")
 	if target != null and Time.get_ticks_msec() / 1000.0 >= notice_until:
 		var remaining := maxf(0.0, float(target) - float(ApiClient.last_world.get("minutes", 0.0)))
-		status.text += "\n定时快进中：剩余 %.0f 游戏分钟，到达后恢复原速" % remaining
+		status.text += "\n定时快进中：剩余%s（游戏时间），到达后恢复原速" % _format_game_duration(ceilf(remaining))
 	if not stream_online:
 		status.text = "对话事件流重连中 · " + ApiClient.backend_time
 	if not ApiClient.backend_online:
@@ -321,9 +325,11 @@ func _process(delta: float) -> void:
 		var url := "/social/relations" if fetching == "relations" else "/npcs/" + panel_name.uri_encode() + "/memory"
 		if fetching == "memory":
 			var index := int(history_slider.value)
+			_memory_history_view = index < history_items.size()
 			if index < history_items.size():
 				url += "?snapshot_id=" + str(int(history_items[index].id))
-				history_label.text = "历史快照：第 %.0f 游戏分钟" % history_items[index].game_time
+				_memory_reference_minutes = float(history_items[index].game_time)
+				history_label.text = "历史快照：" + _format_game_timestamp(_memory_reference_minutes)
 			else:
 				history_label.text = "记忆时间线：当前"
 		if panel_http.request(ApiClient.BACKEND + url) != OK:
@@ -593,6 +599,26 @@ func _advance_turn(playback: Dictionary) -> void:
 		_place_bubble(npc, bubble_labels[npc.npc_name])
 		bubble_labels[npc.npc_name].show()
 
+func _format_game_duration(minutes: float) -> String:
+	var total_minutes := maxi(0, int(floor(minutes)))
+	var parts: PackedStringArray = []
+	var days := int(total_minutes / 1440)
+	var hours := int((total_minutes % 1440) / 60)
+	var remaining := total_minutes % 60
+	if days > 0:
+		parts.append("%d 天" % days)
+	if hours > 0:
+		parts.append("%d 小时" % hours)
+	if remaining > 0 or parts.is_empty():
+		parts.append("%d 分钟" % remaining)
+	return " ".join(parts)
+
+
+func _format_game_timestamp(minutes: float) -> String:
+	var total_minutes := maxi(0, int(floor(minutes)))
+	return "第 %d 天 %02d:%02d" % [int(total_minutes / 1440) + 1, int((total_minutes % 1440) / 60), total_minutes % 60]
+
+
 func _panel_done(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	panel_pending = false
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
@@ -611,6 +637,9 @@ func _panel_done(result: int, code: int, _headers: PackedStringArray, body: Pack
 			lines.append("%s ↔ %s：%.0f / 100 · %s · %+.0f\n原因：%s\n" % [edge.a, edge.b, edge.score, edge.level, edge.delta, edge.reason])
 		views[3].text = "\n".join(lines).replace("[", "[lb]")
 	elif data is Dictionary:
+		# 历史强度和时间都以该快照为准，不能将过去状态误写成当前状态。
+		var fallback_time := _memory_reference_minutes if _memory_history_view else float(ApiClient.last_world.get("minutes", ApiClient.display_minutes))
+		var reference_time := float(data.get("as_of", fallback_time))
 		var keys := ["active", "forgotten", "reflections"]
 		for i in range(3):
 			var lines: PackedStringArray = []
@@ -620,7 +649,11 @@ func _panel_done(result: int, code: int, _headers: PackedStringArray, body: Pack
 				var memory_text := str(item.content).replace("[", "[lb]")
 				if i == 1:
 					memory_text = "[s]" + memory_text + "[/s]"
-				lines.append("%s %s\n%s%s %.0f%% · 第%.0f分钟\n%s\n" % ["★" if item.type == "reflection" else "•", memory_text, "■".repeat(bars), "□".repeat(10-bars), strength * 100, item.game_time, item.get("forget_reason", "")])
+				var occurred_at := float(item.get("game_time", 0))
+				var timing := "发生于：%s\n%s：%s" % [_format_game_timestamp(occurred_at), "距当时" if _memory_history_view else "距今", _format_game_duration(reference_time - occurred_at)]
+				if i == 1 and float(item.get("forgotten_at", 0)) > 0:
+					timing += "\n遗忘于：" + _format_game_timestamp(float(item.forgotten_at))
+				lines.append("%s %s\n%s%s %.0f%%\n%s\n%s\n" % ["★" if item.type == "reflection" else "•", memory_text, "■".repeat(bars), "□".repeat(10-bars), strength * 100, timing, item.get("forget_reason", "")])
 			var content := "\n".join(lines) if not lines.is_empty() else "暂无记录"
 			var color := "#a0a0a0" if i == 1 else ("#ffd978" if i == 2 else "#b5e5c2")
 			views[i].text = "[color=" + color + "]" + content + "[/color]"

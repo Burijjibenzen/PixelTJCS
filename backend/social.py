@@ -1,6 +1,7 @@
 """M3 装配与查询：LangGraph 调度在 scheduler.py；事件仅经 /ws/events 推送。"""
 import asyncio
 import json
+import math
 import threading
 import time
 import uuid
@@ -9,7 +10,7 @@ from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from backend.service import GameService
 from backend.config import SOCIAL
-from backend.world import AREAS, grid_of
+from backend.world import AREAS, ROOMS, grid_of
 from backend.event_stream import EventStream
 from backend.scheduler import Scheduler
 from backend.playback import dialogue_segments
@@ -21,6 +22,7 @@ class SocialService(GameService):
         super().__init__(fresh_db=fresh_db)
         self.lock=threading.RLock()
         self.busy=set();self.reflecting=set();self.seen={}
+        self.positions={}  # 临时实际坐标，不持久化；与WebSocket心跳在线状态分开。
         self.meetings=[];self.live_lines={};self.future=None
         self._closed=False
         self.paused=False;self.speed=SOCIAL.speed;self.epoch=uuid.uuid4().hex
@@ -120,20 +122,46 @@ class SocialService(GameService):
             return m
 
     def available(self,a,b):return not ({a,b}&(self.busy|self.reflecting))
+
+    def nearby(self,a,b,now=None,allow_legacy=False):
+        if a==b or a not in self.npcs or b not in self.npcs:return False
+        area=AREAS[self.world.area_of(a)]['id']
+        if area!=AREAS[self.world.area_of(b)]['id']:return False
+        first,second=self.positions.get(a),self.positions.get(b)
+        # 旧接口显式对话/会面继续兼容；自然相遇始终要求双方最新坐标。
+        if first is None or second is None:return allow_legacy and first is None and second is None
+        now=time.monotonic() if now is None else now
+        if any(p['area']!=area or not 0<=now-p['at']<=SOCIAL.position_max_age_seconds for p in (first,second)):
+            return False
+        return math.hypot(first['x']-second['x'],first['y']-second['y'])<=SOCIAL.encounter_radius
+
     def valid_pair(self,a,b):
         return (a!=b and a in self.npcs and b in self.npcs and
-                AREAS[self.world.area_of(a)]['id']==AREAS[self.world.area_of(b)]['id'] and self.world.can_chat(a,b)[0])
+                self.nearby(a,b,allow_legacy=True) and self.world.can_chat(a,b)[0])
 
     def assign_destination(self,name,area):
         with self.lock:
             return self.planner.command(name,area)
 
-    def report_arrival(self,npc_name,grid_id=None,map_id=None,room_id=None,arrived=None,activity_id=None):
+    def report_arrival(self,npc_name,grid_id=None,map_id=None,room_id=None,arrived=None,activity_id=None,x=None,y=None):
         with self.lock:
-            if npc_name in self.busy:return True,'busy'
+            if npc_name not in self.npcs:return False,'未知角色'
+            sample=None
+            if x is not None or y is not None:
+                room=ROOMS.get((map_id,room_id))
+                if room is None or x is None or y is None or not all(math.isfinite(v) for v in (x,y)):
+                    return False,'坐标需要有效的楼层、房间以及有限的x和y'
+                sample=dict(area=room['id'],x=x,y=y,at=time.monotonic())
+            if npc_name in self.busy:
+                # 决策期间仍接收实际坐标，不能用预约前的旧位置开始远距离对话。
+                if sample:self.positions[npc_name]=sample
+                else:self.positions.pop(npc_name,None)
+                return True,'busy'
             result=super().report_arrival(npc_name,grid_id,map_id,room_id)
             if result[0]:
                 self.seen[npc_name]=time.monotonic()
+                if sample:self.positions[npc_name]=sample
+                else:self.positions.pop(npc_name,None)
                 self.planner.arrived(npc_name,arrived,activity_id)
         if result[0] and result[1]=='moved':
             self.emit('movement',npc=npc_name,area=self.world.area_of(npc_name))
@@ -150,9 +178,10 @@ class SocialService(GameService):
         # 手动端点也经过同一 LangGraph 调度图，不保留绕过决策的旧路径。
         return self.scheduler.execute(dict(a=a,b=b,trigger=trigger,forced=True,meeting_id='',conversation_id=uuid.uuid4().hex))
 
-    def perform(self,a,b,trigger,run_id,candidate,meeting_id=''):
+    def perform(self,a,b,trigger,run_id,candidate,meeting_id='',require_near=False):
         with self.lock:
             if not self.valid_pair(a,b):raise ValueError('位置或冷却条件已变化')
+            if require_near and not self.nearby(a,b):raise ValueError('双方已不在相遇距离内')
             m=self.meeting(meeting_id)
             if m:m.update(state='talking',detail='LangGraph 对话中')
         result=self.engine.run(a,b,trigger,run_id=run_id,gossip=candidate)
@@ -331,6 +360,7 @@ class SocialService(GameService):
                         area=AREAS[m['area']]
                         result['npcs'][name].update(target_map_id=area['map_id'],target_room_id=area['room_id'],target_grid=grid_of(area['id']))
             result['social']=dict(meetings=[dict(m) for m in self.meetings],**self.control_state(),epoch=self.epoch,
+                                 position_report_seconds=SOCIAL.position_report_seconds,
                                  model_configured=bool(getattr(getattr(self.llm,'cfg',None),'api_key','')))
             return result
 

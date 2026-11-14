@@ -5,9 +5,9 @@
 > 配套阅读: `docs/DESIGN.md`（需求与设计）、`docs/MAP_SPEC.md`（地图格式规范）、
 > `README.md`（快速开始）。
 
-> 2026-11-14 接力更新：后端保留原版现实1秒=游戏10分钟；1小时/4小时/3天快进连续运行，完成后恢复原速；对话恢复即时替换，气泡不限制人物行动；试走跨馆出口与NPC共用。细节及复测见 [TIME_AND_DIALOGUE.md](TIME_AND_DIALOGUE.md)，M3实现见 [M3.md](M3.md)。
+> 2026-11-14 接力更新：后端保留原版现实1秒=游戏10分钟；1小时/4小时/3天快进连续运行，完成后恢复原速；对话恢复即时替换，气泡不限制人物行动；试走跨馆出口与NPC共用。细节及复测见 [FIRST_VERSION.md](FIRST_VERSION.md)，M3实现见 [M3.md](M3.md)。
 
-> 动态日程接力：固定作息之上增加身份/性格、本人记忆、好友和已知事件驱动的活动；行程锁定直到实际到达，再开始停留。活动信息统一在“社交观察 → 角色资料”显示，移除重复的固定日程窗口；明确标注当前活动、活动状态、安排依据、行程说明和目的地。实现、参数、API和验收方法见 [DYNAMIC_SCHEDULES.md](DYNAMIC_SCHEDULES.md)。
+> 动态日程接力：固定作息之上增加身份/性格、本人记忆、好友和已知事件驱动的活动；行程锁定直到实际到达，再开始停留。活动信息统一在“社交观察 → 角色资料”显示，移除重复的固定日程窗口；明确标注当前活动、活动状态、安排依据、行程说明和目的地。实现、参数、API和验收方法见 [FIRST_VERSION.md](FIRST_VERSION.md)。
 
 ## 1. 项目一句话
 
@@ -18,7 +18,7 @@
 | 能力 | 状态 | 入口 |
 |---|---|---|
 | 人格卡系统（10 张） | ✅ | `personas/*.json` |
-| 公开人格卡与可视化资料页 | ✅ | `GET /npcs/{name}/profile`、`persona_panel.gd`；秘密字段不进入公开响应，详见 `PUBLIC_PROFILES.md` |
+| 公开人格卡与可视化资料页 | ✅ | `GET /npcs/{name}/profile`、`persona_panel.gd`；秘密字段不进入公开响应，详见 `FIRST_VERSION.md` |
 | NPC↔NPC 多轮对话 | ✅ | `POST /conversation`、`run_demo.py` |
 | 记忆写入 + 向量检索 | ✅ | `backend/memory.py` |
 | 遗忘三机制（衰减/淘汰/反思） | ✅ | `GameService.advance_time()` |
@@ -136,7 +136,7 @@ run_demo.py ┘                        ├─> relations.py ──────�
 提示（**只注入本人上下文**，实现"只有我知道、被好友套话才可能说漏"）。
 `load_all_personas()` 扫描 personas/ 目录，坏卡跳过不拖累全局。
 
-`public_profile()` 明确列出公开字段，返回副本，不包含 `secrets`、内部关系配置或原始提示词。`GameService.public_npc_profile()` 补充世界地点与日程名称，API响应模型再限制输出结构。Godot的“角色资料”页复用已有角色选择器，支持离线、缓存、长文本与实时地点，详见 [PUBLIC_PROFILES.md](PUBLIC_PROFILES.md)。
+`public_profile()` 明确列出公开字段，返回副本，不包含 `secrets`、内部关系配置或原始提示词。`GameService.public_npc_profile()` 补充世界地点与日程名称，API响应模型再限制输出结构。Godot的“角色资料”页复用已有角色选择器，支持离线、缓存、长文本与实时地点，详见 [FIRST_VERSION.md](FIRST_VERSION.md)。
 
 ### backend/memory.py —— 自研记忆服务 ★核心★
 一条记忆的生命周期（`MemoryItem` ↔ SQLite 表 `memories`）:
@@ -317,7 +317,7 @@ run_demo.py
 | POST | `/conversation` | ★触发 NPC↔NPC 对话 `{a, b, trigger}` |
 | POST | `/world/advance` | ★连续快进 `{minutes, speed?}`（三天=4320，speed默认60游戏分钟/现实秒），完成后恢复原速并补做维护；请求返回不表示已经到达 |
 | POST | `/world/goto` | 指派目的地 `{npc, map_id, room_id}`，也接受原有的 `{npc, area}`。当前地点随实际走动更新 |
-| POST | `/world/report` | 上报实际位置 `{npc, map_id, room_id, arrived?, activity_id?}`；区分路过与完整到达，兼容旧客户端 |
+| POST | `/world/report` | 上报实际位置 `{npc, map_id, room_id, arrived?, activity_id?, x?, y?}`；坐标为地图内像素，区分路过与完整到达，兼容旧客户端 |
 | POST | `/chat` | 玩家↔NPC 对话 `{npc, message}`（M4 扩展基础） |
 
 前端可视化遗忘面板的数据源就是 `/npcs/{name}/memory` 的 `forgotten` 数组

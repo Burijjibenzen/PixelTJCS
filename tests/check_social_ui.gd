@@ -79,6 +79,23 @@ func verify() -> void:
 	ui.history_name = "A"
 	ui._history_done(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), JSON.stringify([{"id": 10, "game_time": 480}, {"id": 12, "game_time": 900}]).to_utf8_buffer())
 	if not check(ui.history_items.size() == 2 and ui.history_slider.value == 2, "history timeline"): return
+	ui.panel_name = "A"
+	ui.fetching = "memory"
+	var memory := {"content": "测试记录", "type": "dialogue", "strength": 0.5, "game_time": 510, "forgotten_at": 2070}
+	var insight := memory.duplicate()
+	insight.type = "reflection"
+	ui._panel_done(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), JSON.stringify({"as_of": 630, "active": [memory], "forgotten": [memory], "reflections": [insight]}).to_utf8_buffer())
+	for view in ui.views.slice(0, 3):
+		if not check("发生于：第 1 天 08:30" in view.text and "距今：2 小时" in view.text and "50%" in view.text and "■■■■■" in view.text, "all memory tabs show occurrence/elapsed time without changing strength bars"): return
+	if not check("遗忘于：第 2 天 10:30" in ui.views[1].text, "forgotten memories show their forgetting date"): return
+	if not check(ui._format_game_duration(0) == "0 分钟" and ui._format_game_duration(59.9) == "59 分钟" and ui._format_game_duration(60) == "1 小时" and ui._format_game_duration(4320) == "3 天" and ui._format_game_duration(1501) == "1 天 1 小时 1 分钟", "duration format handles minute/hour/day boundaries"): return
+	if not check(ui._format_game_timestamp(1439) == "第 1 天 23:59" and ui._format_game_timestamp(1440) == "第 2 天 00:00" and ui._format_game_timestamp(0) == "第 1 天 00:00", "timestamps follow the game clock day boundaries"): return
+	ui._memory_history_view = true
+	ui._memory_reference_minutes = 630
+	root.get_node("ApiClient").last_world.minutes = 6000
+	ui._panel_done(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), JSON.stringify({"as_of": 630, "active": [memory]}).to_utf8_buffer())
+	if not check("距当时：2 小时" in ui.views[0].text and not "距今" in ui.views[0].text, "history snapshot age uses its own time instead of the live clock"): return
+	ui._memory_history_view = false
 	await process_frame
 	await process_frame
 	var bubble = ui.bubble_labels["C"]

@@ -26,7 +26,9 @@ def main():
     app.get('/health')(lambda:{'status':'ok'})
     @app.post('/test/start')
     def start():
-        with service.lock:service.scheduler.submit(fixture.a,fixture.b,'真实 WS 集成测试')
+        with service.lock:
+            fixture.report_positions([fixture.a,fixture.b])
+            service.scheduler.submit(fixture.a,fixture.b,'真实 WS 集成测试')
         return {'ok':True}
     sock=socket.socket();sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
     server=uvicorn.Server(uvicorn.Config(app,log_level='error',access_log=False,ws='auto'))

@@ -48,6 +48,10 @@ class SocialTests(unittest.TestCase):
         with patch.object(SOCIAL,'base_chat_probability',0):self.s.scheduler.tick(time.monotonic(),elapsed)
     def finish(self):
         for future in list(self.s.scheduler.jobs.values()):future.result(timeout=20)
+    def report_positions(self,names=None):
+        for name in names or self.s.npcs:
+            room=AREAS[self.s.world.area_of(name)]
+            self.s.report_arrival(name,map_id=room['map_id'],room_id=room['room_id'],x=0,y=0)
     def client(self):
         app=FastAPI();install(app,lambda:self.s)
         app.get('/health')(lambda:{'status':'ok'})
@@ -156,6 +160,7 @@ class SocialTests(unittest.TestCase):
         self.assertIsNone(self.s.run_conversation(self.a,self.b,'冷却'))
 
     def test_scheduler_calls_service_then_graph(self):
+        self.report_positions()
         with patch.object(SOCIAL,'base_chat_probability',1),patch('backend.scheduler.random.random',return_value=0),patch.object(self.s,'run_conversation',wraps=self.s.run_conversation) as entry:
             self.s.scheduler.tick(time.monotonic(),0.5);self.finish()
         self.assertEqual(2,entry.call_count)
@@ -163,10 +168,93 @@ class SocialTests(unittest.TestCase):
         self.assertEqual(485,self.s.world.clock.now)
 
     def test_model_can_decline_natural_chat(self):
+        self.report_positions()
         with patch.object(self.s.llm,'chat_json',return_value=SocialDecision(action='continue_schedule')),patch.object(SOCIAL,'base_chat_probability',1),patch('backend.scheduler.random.random',return_value=0):
             self.s.scheduler.tick(time.monotonic());self.finish()
         self.assertFalse(self.s.busy)
         self.assertFalse(any(e['kind']=='dialogue_line' for e in self.s.bus.history()))
+
+    def test_spatial_encounter_requires_same_map_room_radius_and_fresh_coordinates(self):
+        self.report_positions([self.a,self.b])
+        room=AREAS[self.area]
+        self.assertTrue(self.s.nearby(self.a,self.b))
+        self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=SOCIAL.encounter_radius,y=0)
+        self.assertTrue(self.s.nearby(self.a,self.b))
+        self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=SOCIAL.encounter_radius+.1,y=0)
+        self.assertFalse(self.s.nearby(self.a,self.b))
+        self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=SOCIAL.encounter_radius*.8,y=SOCIAL.encounter_radius*.8)
+        self.assertFalse(self.s.nearby(self.a,self.b))
+        other=next(r for r in ROOMS.values() if r['map_id']==room['map_id'] and r['id']!=room['id'])
+        self.s.report_arrival(self.b,map_id=other['map_id'],room_id=other['room_id'],x=0,y=0)
+        self.assertFalse(self.s.nearby(self.a,self.b))
+        other_floor=next(r for r in ROOMS.values() if r['map_id']!=room['map_id'] and r['room_id']==room['room_id'])
+        self.s.report_arrival(self.b,map_id=other_floor['map_id'],room_id=other_floor['room_id'],x=0,y=0)
+        self.assertFalse(self.s.nearby(self.a,self.b))
+        self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=0,y=0)
+        self.s.positions[self.a]['at']-=SOCIAL.position_max_age_seconds+1
+        self.s.heartbeat()
+        self.assertFalse(self.s.nearby(self.a,self.b))
+
+    def test_corridor_far_pair_is_not_a_natural_candidate_but_near_pair_is(self):
+        self.report_positions([self.a,self.b]);room=AREAS[self.area]
+        self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=1000,y=0)
+        before=len(self.s.memory.get_active(self.a,50))
+        with patch.object(SOCIAL,'base_chat_probability',1),patch('backend.scheduler.random.random',return_value=0),patch.object(self.s.scheduler,'submit') as submit:
+            self.s.scheduler.natural(time.monotonic())
+            submit.assert_not_called()
+            self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=32,y=0)
+            self.s.scheduler.natural(time.monotonic())
+            submit.assert_called_once()
+        self.assertEqual(before,len(self.s.memory.get_active(self.a,50)))
+
+    def test_natural_encounter_without_coordinates_does_not_fall_back_to_whole_room(self):
+        self.assertFalse(self.s.nearby(self.a,self.b))
+        with patch.object(SOCIAL,'base_chat_probability',1),patch('backend.scheduler.random.random',return_value=0),patch.object(self.s.scheduler,'submit') as submit:
+            self.s.scheduler.natural(time.monotonic())
+            submit.assert_not_called()
+        # 双方均为旧客户端时，显式请求保留原区域兼容，不自动发起自然对话。
+        self.assertTrue(self.s.valid_pair(self.a,self.b))
+
+    def test_movement_during_model_decision_prevents_remote_chat_and_gossip(self):
+        self.report_positions([self.a,self.b]);room=AREAS[self.area]
+        before=len(self.s.memory.get_active(self.a,50))
+        original=self.s.llm.chat_json
+        def move_before_answer(*args,**kwargs):
+            if args[2] is SocialDecision:
+                self.assertIn(self.b,self.s.busy)
+                self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=1000,y=0)
+                return SocialDecision(action='chat',share_gossip=True)
+            return original(*args,**kwargs)
+        with patch.object(self.s.llm,'chat_json',side_effect=move_before_answer):
+            self.s.scheduler.submit(self.a,self.b,'自然相遇')
+            self.finish()
+        self.assertFalse(self.s.busy)
+        self.assertEqual(1000,self.s.positions[self.b]['x'])
+        self.assertEqual(before,len(self.s.memory.get_active(self.a,50)))
+        self.assertFalse(any(e['kind'] in ('dialogue_line','conversation_started') for e in self.s.bus.history()))
+
+    def test_meeting_in_corridor_waits_until_reported_positions_are_near(self):
+        self.report_positions([self.a,self.b]);room=AREAS[self.area]
+        self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=1000,y=0)
+        meeting=self.s.request_meeting(self.a,self.b)
+        self.s.scheduler.meetings(time.monotonic(),0)
+        self.assertEqual('moving',meeting['state'])
+        self.assertFalse(self.s.busy)
+        self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=16,y=0)
+        self.s.scheduler.meetings(time.monotonic(),0);self.finish()
+        self.assertEqual('completed',meeting['state'])
+
+    def test_position_report_api_rejects_partial_and_nonfinite_coordinates(self):
+        room=AREAS[self.area]
+        body=dict(npc=self.a,map_id=room['map_id'],room_id=room['room_id'],x=8,y=12)
+        with self.profile_client() as client:
+            self.assertEqual(200,client.post('/world/report',json=body).status_code)
+            self.assertEqual(8,self.s.positions[self.a]['x'])
+            partial=dict(body);partial.pop('y')
+            self.assertEqual(400,client.post('/world/report',json=partial).status_code)
+            raw=json.dumps(dict(body,x='NaN'))
+            self.assertEqual(422,client.post('/world/report',content=raw,headers={'content-type':'application/json'}).status_code)
+            self.assertEqual(8,self.s.positions[self.a]['x'])
 
     def test_relationship_changes_probability(self):
         with patch.object(self.s.relations,'get',return_value=0):low=self.s.scheduler.probability(self.a,self.b)

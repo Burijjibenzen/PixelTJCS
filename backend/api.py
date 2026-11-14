@@ -73,6 +73,8 @@ class ReportReq(BaseModel):
     grid: Optional[str] = None
     arrived: Optional[bool] = None  # False 表示经过此房间，仍在行走
     activity_id: Optional[str] = None
+    x: Optional[float] = Field(default=None,ge=-1000000,le=1000000,allow_inf_nan=False)
+    y: Optional[float] = Field(default=None,ge=-1000000,le=1000000,allow_inf_nan=False)
 
 
 class ChatReq(BaseModel):
@@ -209,7 +211,7 @@ def report_arrival(req: ReportReq):
     ⚠️ 决策（已确认）：不写记忆——防 10 人移动噪音；
     "同处一室"观察记忆由 M2.3 相遇/视野事件写入。
     """
-    ok, msg = get_service().report_arrival(req.npc, req.grid, req.map_id, req.room_id, req.arrived, req.activity_id)
+    ok, msg = get_service().report_arrival(req.npc, req.grid, req.map_id, req.room_id, req.arrived, req.activity_id, req.x, req.y)
     if not ok:
         raise HTTPException(400, msg)
     return {"ok": True, "npc": req.npc, "grid": req.grid, "map_id": req.map_id,

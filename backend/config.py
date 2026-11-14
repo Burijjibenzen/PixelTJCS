@@ -85,6 +85,9 @@ class SocialConfig:
     base_chat_probability: float = 0.20
     max_conversations: int = 2
     presence_seconds: float = 15.0
+    encounter_radius: float = 96.0  # 人物脚下坐标的地图像素距离，约6个16px地砖。
+    position_report_seconds: float = 0.25
+    position_max_age_seconds: float = 2.0  # 心跳不能延长坐标有效期。
     meeting_timeout: float = 300.0
     maintenance_minutes: float = 30.0
     bubble_seconds: float = 10.0  # 恢复原版：新台词立即替换，每段最多显示 10 现实秒。

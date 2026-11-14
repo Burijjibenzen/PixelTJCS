@@ -46,6 +46,8 @@ func verify() -> void:
 	ui.set_process(false)
 	ui.profile_panel.set_process(false)
 	ui.history_pending = true
+	var style: StyleBoxFlat = ui.panel.get_theme_stylebox("panel")
+	if not check(style.corner_radius_top_left == 8 and style.corner_radius_top_right == 8 and style.corner_radius_bottom_left == 8 and style.corner_radius_bottom_right == 8, "observer panel has four rounded corners"):return
 	for actor in main.npcs:
 		actor.set_physics_process(false)
 		actor.global_position += Vector2(600, 600)

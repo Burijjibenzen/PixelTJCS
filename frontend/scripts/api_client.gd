@@ -38,6 +38,8 @@ var _pending_positions := {}  # 每名 NPC 只保留最新待发送位置
 var _sending_position := {}
 var _confirmed_positions := {}
 var _speed_pending := false
+var _position_timer := 0.0
+var position_report_interval := 0.25
 
 
 func _ready() -> void:
@@ -62,6 +64,12 @@ func setup(npcs: Array) -> void:
 
 func _process(delta: float) -> void:
 	_advance_display_clock(delta)
+	_position_timer -= delta
+	if backend_online and _position_timer <= 0.0:
+		_position_timer = position_report_interval
+		for npc in _npcs:
+			if is_instance_valid(npc):
+				report_arrival(npc, true)
 	_poll_timer -= delta
 	if _poll_timer <= 0.0:
 		_poll_timer = POLL_INTERVAL
@@ -108,6 +116,7 @@ func apply_stream_world(data: Dictionary) -> void:
 func _apply_world(data: Dictionary) -> void:
 	_fail_count = 0
 	var social: Dictionary = data.get("social", {})
+	position_report_interval = clampf(float(social.get("position_report_seconds", 0.25)), 0.1, 1.0)
 	base_speed = float(social.get("base_speed", BASE_SPEED))
 	simulation_speed = float(social.get("speed", BASE_SPEED))
 	simulation_paused = bool(social.get("paused", false))
@@ -178,7 +187,7 @@ func set_speed(multiplier: float) -> void:
 		control_error.emit("倍速切换失败，请稍后重试")
 
 
-func report_arrival(npc) -> void:
+func report_arrival(npc, refresh := false) -> void:
 	if not backend_online:
 		return
 	var room := Game.room_id_at(npc.global_position, npc.map_id)
@@ -186,6 +195,9 @@ func report_arrival(npc) -> void:
 	if room.is_empty() or info.is_empty():
 		return  # 门洞可能位于两个房间之间
 	var item := {"npc": npc.npc_name, "map_id": npc.map_id, "room_id": room, "arrived": not npc.is_travelling()}
+	var local_position: Vector2 = npc.global_position - Game.map_offset(npc.map_id)
+	item["x"] = snappedf(local_position.x, 0.1)
+	item["y"] = snappedf(local_position.y, 0.1)
 	if info.has("activity"):
 		item["activity_id"] = str(info.activity.get("id", ""))
 	if not info.has("target_map_id"):
@@ -195,7 +207,7 @@ func report_arrival(npc) -> void:
 		if Game.floor_data[Game.FLOOR3].waypoint_rooms.get(npc.goal_room, "") == room:
 			grid = npc.goal_room
 		item = {"npc": npc.npc_name, "grid": grid}
-	if item == _sending_position or (_sending_position.get("npc") != npc.npc_name and _confirmed_positions.get(npc.npc_name) == item):
+	if item == _sending_position or (not refresh and _sending_position.get("npc") != npc.npc_name and _confirmed_positions.get(npc.npc_name) == item):
 		_pending_positions.erase(npc.npc_name)
 		return
 	_pending_positions[npc.npc_name] = item

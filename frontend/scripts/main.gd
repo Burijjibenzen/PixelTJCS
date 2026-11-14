@@ -142,7 +142,7 @@ func _refresh_schedule_ui() -> void:
 	if not panel.visible:
 		return
 	var npcs_data: Dictionary = ApiClient.last_world.get("npcs", {})
-	var lines: PackedStringArray = ["当前日程"]
+	var lines: PackedStringArray = ["今日活动 · 实际行走后开始停留\n"]
 	for npc in npcs:
 		var info: Dictionary = npcs_data.get(npc.npc_name, {})
 		if info.is_empty():
@@ -152,11 +152,17 @@ func _refresh_schedule_ui() -> void:
 		var target_map: String = info.get("target_map_id", Game.FLOOR3)
 		var target_room: String = info.get("target_room_id", info.get("target_grid", ""))
 		var place := _location_name(map_id, room)
-		if map_id == target_map and room == target_room and not npc.is_travelling():
+		var activity: Dictionary = info.get("activity", {})
+		if not activity.is_empty():
+			lines.append("%s　[%s] %s" % [npc.npc_name, activity.get("state_label", "等待"), activity.get("title", "基础作息")])
+			lines.append("目的地：%s" % _location_name(target_map, target_room))
+			lines.append("原因：%s" % activity.get("reason", "沿用基础作息"))
+			lines.append("%s\n" % activity.get("detail", ""))
+		elif map_id == target_map and room == target_room and not npc.is_travelling():
 			lines.append("%s　[已到] %s" % [npc.npc_name, place])
 		else:
 			lines.append("%s　%s → %s" % [npc.npc_name, place, _location_name(target_map, target_room)])
-	$UI/SchedulePanel/ScheduleLabel.text = "\n".join(lines)
+	$UI/SchedulePanel/Scroll/ScheduleLabel.text = "\n".join(lines)
 
 # 随机演示只给空闲角色分配新目标，跨层行程会完整走完。
 func _random_schedule() -> void:

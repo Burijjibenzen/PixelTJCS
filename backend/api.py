@@ -71,6 +71,8 @@ class ReportReq(BaseModel):
     map_id: Optional[str] = None
     room_id: Optional[str] = None
     grid: Optional[str] = None
+    arrived: Optional[bool] = None  # False 表示经过此房间，仍在行走
+    activity_id: Optional[str] = None
 
 
 class ChatReq(BaseModel):
@@ -195,7 +197,7 @@ def goto(req: GotoReq):
         if room is None or area is not None:
             raise HTTPException(400, "请提供有效的 map_id 和 room_id，或只提供 area")
         area = room["id"]
-    if not area or not get_service().world.assign_override(req.npc, area):
+    if not area or not get_service().assign_destination(req.npc, area):
         raise HTTPException(400, "npc 或 area 无效")
     return {"ok": True, "npc": req.npc, "area": area}
 
@@ -207,7 +209,7 @@ def report_arrival(req: ReportReq):
     ⚠️ 决策（已确认）：不写记忆——防 10 人移动噪音；
     "同处一室"观察记忆由 M2.3 相遇/视野事件写入。
     """
-    ok, msg = get_service().report_arrival(req.npc, req.grid, req.map_id, req.room_id)
+    ok, msg = get_service().report_arrival(req.npc, req.grid, req.map_id, req.room_id, req.arrived, req.activity_id)
     if not ok:
         raise HTTPException(400, msg)
     return {"ok": True, "npc": req.npc, "grid": req.grid, "map_id": req.map_id,

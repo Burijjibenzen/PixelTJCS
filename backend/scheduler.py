@@ -83,6 +83,7 @@ class Scheduler:
                     s.emit('conversation_released',conversation_id=key,participants=playback['participants'])
             self.jobs={p:f for p,f in self.jobs.items() if not f.done()}
             if not s.paused:
+                s.planner.tick(now,elapsed)
                 self.meetings(now,elapsed)
                 self.natural(now)
                 if (s.maintenance_due or s.world.clock.now-self.last_maintenance>=SOCIAL.maintenance_minutes) and (s.future is None or s.future.done()):
@@ -97,6 +98,8 @@ class Scheduler:
     def meetings(self,now,elapsed):
         s=self.s;claimed=set()
         for m in s.active_meetings():
+            if m['state'] not in ('talking','deciding') and any(s.planner.manual(n) for n in (m['a'],m['b'])):
+                m.update(state='waiting',detail='等待手动指派行程完成');continue
             pair={m['a'],m['b']};conflict=bool(pair&claimed);claimed.update(pair)
             if m['state'] in ('talking','deciding'):
                 continue
@@ -136,6 +139,10 @@ class Scheduler:
             if len(s.busy)>=SOCIAL.max_conversations*2:
                 break
             pair=tuple(sorted((a,b)))
+            if any(s.planner.manual(n) or (s.planner.current_item(n) or {}).get('priority',0)>=70 for n in pair):
+                continue
+            if not colocated and any((s.planner.current_item(n) or {}).get('phase')=='travelling' for n in pair):
+                continue  # 已上路时不再临时起意找远处好友；保留实际相遇和显式会面。
             if set(pair)&reserved or not s.available(a,b) or not s.world.can_chat(a,b)[0]:
                 continue
             if not all(now-s.seen.get(n,-100)<SOCIAL.presence_seconds for n in pair) or now<self.next_decision.get(pair,0):

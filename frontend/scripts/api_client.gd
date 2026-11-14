@@ -16,6 +16,7 @@ const BASE_SPEED := 10.0
 const SPEED_OPTIONS := [10.0, 20.0, 40.0, 60.0]  # 游戏分钟/现实秒；对应原速的1/2/4/6倍。
 
 var backend_online := false
+var backend_url := BACKEND  # 测试/自托管可覆盖；默认开发地址不变。
 var backend_time := "第1天 08:00:00"
 var display_minutes := 480.0
 var simulation_speed := BASE_SPEED
@@ -73,7 +74,7 @@ func _poll() -> void:
 	if _polling:
 		return  # 上一发还没回来(超时保护)
 	_polling = true
-	if _http.request(BACKEND + "/world", [], HTTPClient.METHOD_GET) != OK:
+	if _http.request(backend_url + "/world", [], HTTPClient.METHOD_GET) != OK:
 		_polling = false
 
 
@@ -170,7 +171,7 @@ func set_speed(multiplier: float) -> void:
 	if _speed_pending:
 		return
 	_speed_pending = true
-	var error := _http_adv.request(BACKEND + "/world/speed", ["Content-Type: application/json"], HTTPClient.METHOD_POST,
+	var error := _http_adv.request(backend_url + "/world/speed", ["Content-Type: application/json"], HTTPClient.METHOD_POST,
 		JSON.stringify({"speed": multiplier, "paused": false}))
 	if error != OK:
 		_speed_pending = false
@@ -184,7 +185,9 @@ func report_arrival(npc) -> void:
 	var info: Dictionary = last_world.get("npcs", {}).get(npc.npc_name, {})
 	if room.is_empty() or info.is_empty():
 		return  # 门洞可能位于两个房间之间
-	var item := {"npc": npc.npc_name, "map_id": npc.map_id, "room_id": room}
+	var item := {"npc": npc.npc_name, "map_id": npc.map_id, "room_id": room, "arrived": not npc.is_travelling()}
+	if info.has("activity"):
+		item["activity_id"] = str(info.activity.get("id", ""))
 	if not info.has("target_map_id"):
 		if npc.map_id != Game.FLOOR3:
 			return
@@ -205,16 +208,19 @@ func _pump_report() -> void:
 	var who: String = _pending_positions.keys()[0]
 	_sending_position = _pending_positions[who]
 	_pending_positions.erase(who)
-	var error := _http_post.request(BACKEND + "/world/report",
+	var error := _http_post.request(backend_url + "/world/report",
 		["Content-Type: application/json"], HTTPClient.METHOD_POST, JSON.stringify(_sending_position))
 	if error != OK:
 		_sending_position = {}  # 下一次轮询会重新读取角色的实际位置
 
 
 func _on_report_done(result: int, code: int, _headers: PackedStringArray,
-		_body: PackedByteArray) -> void:
+		body: PackedByteArray) -> void:
+	var response = JSON.parse_string(body.get_string_from_utf8())
 	if result == HTTPRequest.RESULT_SUCCESS and code == 200 and not _sending_position.is_empty():
-		_confirmed_positions[_sending_position.npc] = _sending_position
+		# busy 表示服务端本次没有处理位置；解除占用后仍需重报，不能缓存为已确认。
+		if not response is Dictionary or response.get("detail", "") != "busy":
+			_confirmed_positions[_sending_position.npc] = _sending_position
 	_sending_position = {}
 	_pump_report()
 
@@ -226,7 +232,7 @@ func advance_time(minutes: int) -> void:
 	_speed_pending = true
 	var body := JSON.stringify({"minutes": minutes})
 	print("[ApiClient] 快进 %d 游戏分钟..." % minutes)
-	if _http_adv.request(BACKEND + "/world/advance",
+	if _http_adv.request(backend_url + "/world/advance",
 		["Content-Type: application/json"], HTTPClient.METHOD_POST, body) != OK:
 		_speed_pending = false
 		control_error.emit("快进请求未能发送")

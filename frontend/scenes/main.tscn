@@ -1,4 +1,4 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=9 format=3]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1"]
 [ext_resource type="PackedScene" path="res://assets/map/jishilou_floor3/Map.tscn" id="2"]
@@ -9,6 +9,22 @@
 
 [ext_resource type="PackedScene" path="res://assets/map/jishilou_floor4/Map.tscn" id="6"]
 [ext_resource type="PackedScene" path="res://assets/map/zhixinguan_floor2/Map.tscn" id="7"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_schedule"]
+bg_color = Color(0.07, 0.11, 0.17, 0.95)
+border_color = Color(0.28, 0.48, 0.52, 0.8)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_left = 8
+corner_radius_bottom_right = 8
+content_margin_left = 8.0
+content_margin_top = 10.0
+content_margin_right = 8.0
+content_margin_bottom = 10.0
 
 [node name="Main" type="Node2D"]
 script = ExtResource("1")
@@ -71,14 +87,21 @@ theme_override_constants/outline_size = 4
 text = "1/2/3 切楼    方向键平移    滚轮缩放    空格跟随 NPC    Esc 取消    V / F3 查看分区"
 
 [node name="SchedulePanel" type="PanelContainer" parent="UI"]
+theme_override_styles/panel = SubResource("StyleBox_schedule")
 anchor_left = 1.0
 anchor_right = 1.0
 offset_left = -385.0
 offset_top = 36.0
 offset_right = -12.0
-offset_bottom = 236.0
+offset_bottom = 356.0
 
-[node name="ScheduleLabel" type="Label" parent="UI/SchedulePanel"]
+[node name="Scroll" type="ScrollContainer" parent="UI/SchedulePanel"]
+horizontal_scroll_mode = 0
+
+[node name="ScheduleLabel" type="Label" parent="UI/SchedulePanel/Scroll"]
+custom_minimum_size = Vector2(328, 0)
+size_flags_horizontal = 3
+autowrap_mode = 2
 theme_override_font_sizes/font_size = 13
 text = ""
 

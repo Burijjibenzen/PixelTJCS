@@ -1,6 +1,7 @@
 """校园世界的时钟、实际位置、日程目标和事件。"""
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -116,6 +117,7 @@ class World:
     #   override_slot 记录"指派时所处的日程段"，用于检测翻段。
     override_area: Dict[str, str] = field(default_factory=dict)
     override_slot: Dict[str, str] = field(default_factory=dict)
+    activity_targets: Dict[str, str] = field(default_factory=dict)  # 社交调度器锁定的行程
     events: List[dict] = field(default_factory=list)  # 事件流水
     last_chat_at: Dict[Tuple[str, str], float] = field(default_factory=dict)
 
@@ -196,10 +198,10 @@ class World:
         return True
 
     def target_area(self, name: str) -> str:
-        """角色此刻应前往的区域：显式指派 > 人格卡日程（惰性计算，无后台线程）。
+        """兼容旧指派，其次取动态调度器锁定的行程，最后用人格卡兜底。
 
-        前端每次轮询 /world 都会取该值并换算成几何区域下发寻路，
-        因此后端不需要任何定时器——时钟推进/日程变化在下次轮询即生效。
+        World只保存目标事实；动态生命周期由daily_planner驱动，Godot负责实际行走。
+        CLI不装配动态调度器时继续按原固定日程运行。
         """
         ov = self.override_area.get(name)
         if ov is not None:
@@ -210,7 +212,7 @@ class World:
                 log.info("⌛ %s 的指派过期，回归日程", name)
             else:
                 return ov
-        return self.schedule_area(self.personas[name], self.clock.now)
+        return self.activity_targets.get(name) or self.schedule_area(self.personas[name], self.clock.now)
 
     def report_arrival(self, name: str, grid_id: Optional[str] = None,
                        map_id: Optional[str] = None, room_id: Optional[str] = None) -> Tuple[bool, str]:
@@ -251,6 +253,8 @@ class World:
         """注入世界事件（如"组会通知"），写入事件流水并返回事件对象。"""
         event = {
             "id": len(self.events) + 1,
+            "key": uuid.uuid4().hex,
+            "game_time": self.clock.now,
             "time": self.clock.fmt(),
             "text": text,
             "participants": participants,

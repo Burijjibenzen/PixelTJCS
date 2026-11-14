@@ -29,6 +29,19 @@ class AgentState(TypedDict, total=False):
 
 
 class AgentRuntime:
+    def plan_day(self, context):
+        """每日一次的可选计划请求；知识只来自该角色自己的上下文。"""
+        import json
+        from backend.activity_catalog import DailyPlan
+        from backend.config import ACTIVITY
+        return self.npc.llm.chat_json(self.npc.card.render_system_prompt(),
+            '结合身份、目标、性格与以下本人已知资料，安排今天剩余时间的1至3项活动。'
+            '基础作息继续保留；不要安排全天漫游。只选places中给出的kind/area组合。'
+            'start_minute是出发时间，必须不早于minute；预留行走时间，duration是到达后的游戏分钟。'
+            'visit必须选择friends中的partner，其他活动partner为空。basis如实说明依据。'
+            '未知事件、他人的秘密、他人的记忆一律不能当作依据。\n'+json.dumps(context,ensure_ascii=False),
+            DailyPlan,timeout=ACTIVITY.model_timeout_seconds)
+
     def __init__(self, npc, relations):
         self.npc, self.relations = npc, relations
         graph = StateGraph(AgentState)

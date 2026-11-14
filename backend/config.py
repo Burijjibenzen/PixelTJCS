@@ -94,3 +94,27 @@ class SocialConfig:
     websocket_queue: int = 256
 
 SOCIAL = SocialConfig()
+
+
+@dataclass
+class ActivityConfig:
+    """动态活动参数；时间点/停留用游戏分钟，行走预算用原速下的现实秒。"""
+    enabled: bool = True
+    daily_optional_count: int = 2
+    dwell_minutes: float = 180.0
+    min_stay_seconds: float = 12.0
+    travel_timeout_seconds: float = 300.0
+    pending_expiry_minutes: float = 720.0
+    appointment_lead_minutes: float = 180.0
+    context_scan_seconds: float = 5.0
+    memory_reactions_per_day: int = 1
+    event_reactions_per_day: int = 4
+    friend_threshold: float = 70.0
+    model_enabled: bool = True
+    model_interval_seconds: float = 8.0
+    model_timeout_seconds: float = 8.0
+    model_result_deadline_seconds: float = 12.0
+    history_days: int = 3
+
+
+ACTIVITY = ActivityConfig()

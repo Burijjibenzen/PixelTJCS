@@ -7,6 +7,8 @@
 
 > 2026-11-14 接力更新：后端保留原版现实1秒=游戏10分钟；1小时/4小时/3天快进连续运行，完成后恢复原速；对话恢复即时替换，气泡不限制人物行动；试走跨馆出口与NPC共用。细节及复测见 [TIME_AND_DIALOGUE.md](TIME_AND_DIALOGUE.md)，M3实现见 [M3.md](M3.md)。
 
+> 动态日程接力：固定作息之上增加身份/性格、本人记忆、好友和已知事件驱动的活动；行程锁定直到实际到达，再开始停留。Godot日程面板和角色资料页显示活动状态与原因。实现、参数、API和验收方法见 [DYNAMIC_SCHEDULES.md](DYNAMIC_SCHEDULES.md)。
+
 ## 1. 项目一句话
 
 10 个校园 NPC 在济事楼三楼、四楼和智信馆二楼活动。Godot 依据每层的实际地板和障碍物移动角色。连接后端后，角色按日程或临时指派行动，并上报实际走到的楼层和房间。离线时可直接观看本地演示。
@@ -165,6 +167,7 @@ add() 写入(算向量) → recall() 三因子打分检索 → full_forget_pass(
 - `GameClock`: 游戏分钟数，`fmt()` 输出"第 D 天 HH:MM"
 - `World.npc_area`: {角色: 区域id}。M1 无移动系统，位置由 `set_area()`/日程
   显式设定；`co_located_pairs()` 已实现同区域判定，是 M3 调度器的地基
+- HTTP动态日程由 `social.py` 装配 `daily_planner.py`，后者只依赖活动目录、配置和世界事实，不被World/底层记忆模块反向导入。模型建议通过 `agent_runtime.py` 调用统一 `llm.py`；参数集中于 `config.ACTIVITY`。实际位置仍来自Godot上报，`activity_targets`只保存锁定的目的地。
 - `inject_event()`: 事件流水（组会通知、召见等）
 - `can_chat()/mark_chatted()`: 对话冷却（同一对 120 游戏分钟内不重复触发）
 
@@ -304,13 +307,15 @@ run_demo.py
 | GET | `/world` | 世界快照（时间/全员位置/最近事件）；每个 NPC 带有当前位置 `map_id` / `room_id` 与目的地 `target_map_id` / `target_room_id` |
 | GET | `/npcs` | 角色名单（身份/性格/位置） |
 | GET | `/npcs/{name}/profile` | 公开人格、目标、地点和日程；字段白名单，不含秘密和内部关系配置；未知角色404 |
+| GET | `/npcs/{name}/activities` | 当前活动/原因/状态和最近20项安排，详情见动态日程交接 |
+| POST | `/npcs/{name}/activities/{id}/cancel` | 取消活动；已经开始处理的会面返回409 |
 | GET | `/npcs/{name}/memory` | ★个人记忆面板: `active`/`forgotten`/`reflections` 三视图 |
 | GET | `/relations` | 全员关系矩阵（0~100，None=陌生人） |
 | GET | `/areas` | 区域地图 |
 | POST | `/conversation` | ★触发 NPC↔NPC 对话 `{a, b, trigger}` |
 | POST | `/world/advance` | ★连续快进 `{minutes, speed?}`（三天=4320，speed默认60游戏分钟/现实秒），完成后恢复原速并补做维护；请求返回不表示已经到达 |
 | POST | `/world/goto` | 指派目的地 `{npc, map_id, room_id}`，也接受原有的 `{npc, area}`。当前地点随实际走动更新 |
-| POST | `/world/report` | 上报实际位置 `{npc, map_id, room_id}`，更新世界中的地点；兼容旧单图客户端的 `{npc, grid}` |
+| POST | `/world/report` | 上报实际位置 `{npc, map_id, room_id, arrived?, activity_id?}`；区分路过与完整到达，兼容旧客户端 |
 | POST | `/chat` | 玩家↔NPC 对话 `{npc, message}`（M4 扩展基础） |
 
 前端可视化遗忘面板的数据源就是 `/npcs/{name}/memory` 的 `forgotten` 数组
@@ -366,6 +371,8 @@ M3 迁移路线: conversation.py 的每个步骤（opener/speak/assess/memory/re
 
 后端提供目的地，Godot 把它分解为各楼层的行走段，并用实际地板判断角色位置。后端单独保存行走过程中上报的地点。NPC 经过走廊或楼梯时，原定目的地仍然有效。
 
+HTTP运行时的目的地由动态活动锁定；基础日程翻段不再打断行走。手动指派也作为活动处理，忙碌时等待，实际到达并停留后释放。旧CLI不装配动态调度器，保留原习惯行为。
+
 ### 11.4 离线兜底（答辩保险）
 LLM 挂了/没 key 时: 说话 → 用人格卡 example_lines 随机兜底；
 记忆 → 模板内容（importance 0.4）；关系 → 固定 +1。**演示永不中断**，
@@ -409,7 +416,7 @@ fastapi/uvicorn（接口）、openai（SDK）、pydantic（校验）、python-do
 | Godot 打不开工程/弹升级提示 | 引擎版本与排错见 §7.5（"将修改为 Godot 4.7"弹窗点确认即可） |
 | Godot 运行报 SCRIPT ERROR | 看错误行的脚本名+行号；若是资源路径问题先删 `frontend/.godot/` 缓存重新导入 |
 | 前端看不到任何 NPC | 查 Output 面板是否打印 `[Main] 已生成 10 个 NPC`；没有则 `data/npc_roster.json` 路径/JSON 被改坏 |
-| 前端"已连接后端"但 NPC 不挪窝 | 后端日程没翻段：目的地按人格卡 `schedule` 时刻表**惰性**计算，时间不跨段目标不变（前端 WANDER 在房内闲逛是正常的）；可 `POST /world/advance` 快进触发翻段 |
+| 前端"已连接后端"但 NPC 不挪窝 | 查看日程的等待说明及 `/npcs/{name}/activities`：可能被对话/反思、前序会面或位置上报阻塞。基础作息翻段不会打断在途活动；同室闲逛正常，超时可检查路线或取消重排 |
 | room_id_at 等按数字键查字典查不到 | JSON 解析出的数字是 **float**，GDScript 字典里 `3.0` 和 `3` 是不同键——跨 JSON/代码的数字键必须显式 `int()`（M2.2 实际踩坑，详见 game_data.gd `room_id_at` 注释） |
 
 ## 14. 本轮接力的实现边界与复测

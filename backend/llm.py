@@ -61,6 +61,7 @@ class LLMClient:
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        timeout: Optional[float] = None,
     ) -> Optional[str]:
         """单轮对话，返回正文文本；失败返回 None（上层降级）。
 
@@ -80,7 +81,8 @@ class LLMClient:
         ]
         for attempt in range(2):  # 最多重试一次
             try:
-                resp = self._client.chat.completions.create(
+                client = self._client.with_options(timeout=timeout,max_retries=0) if timeout is not None else self._client
+                resp = client.chat.completions.create(
                     model=model,
                     messages=messages,
                     max_tokens=max_tokens,
@@ -111,6 +113,7 @@ class LLMClient:
         user: str,
         schema: Type[T],
         model: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> Optional[T]:
         """让模型输出 JSON 并解析为 Pydantic 对象；失败返回 None。
 
@@ -124,7 +127,8 @@ class LLMClient:
             f"{system}\n\n【输出要求】只输出一个 JSON 对象，不要输出任何其他文字、"
             f"不要用 markdown 代码块。字段必须符合以下 schema:\n{schema_hint}"
         )
-        raw = self.chat(sys_prompt, user, model=model, temperature=0.3)
+        options = {'timeout':timeout} if timeout is not None else {}
+        raw = self.chat(sys_prompt, user, model=model, temperature=0.3, **options)
         if raw is None:
             return None
         parsed = self._try_parse_json(raw, schema)
@@ -136,7 +140,7 @@ class LLMClient:
             f"{user}\n\n你上一次的输出无法通过校验，请严格按 schema 重新输出 JSON。\n"
             f"上次输出: {raw[:500]}"
         )
-        raw = self.chat(sys_prompt, retry_user, model=model, temperature=0.2)
+        raw = self.chat(sys_prompt, retry_user, model=model, temperature=0.2, **options)
         if raw is None:
             return None
         return self._try_parse_json(raw, schema)

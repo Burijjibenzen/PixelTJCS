@@ -24,6 +24,7 @@ var long_goal: Label
 var style_label: Label
 var location_label: Label
 var destination_label: Label
+var activity_label: Label
 var schedule_box: VBoxContainer
 var _profile := {}
 var _was_visible := false
@@ -93,6 +94,8 @@ func _ready() -> void:
 	body.add_child(location_label)
 	destination_label = _label("", 12, MUTED)
 	body.add_child(destination_label)
+	activity_label = _label("", 13, ACCENT)
+	body.add_child(activity_label)
 	body.add_child(HSeparator.new())
 	expertise_label = _section(body, "擅长领域")
 	short_goal = _section(body, "近期目标")
@@ -265,10 +268,14 @@ func _place_name(info: Dictionary, target := false) -> String:
 func _render_location() -> void:
 	var current := ""
 	var destination := ""
+	activity_label.text = ""
 	if ApiClient.backend_online:
 		var info: Dictionary = ApiClient.last_world.get("npcs", {}).get(selected_name, {})
 		current = _place_name(info)
 		destination = _place_name(info, true)
+		var activity: Dictionary = info.get("activity", {})
+		if not activity.is_empty():
+			activity_label.text = "%s · %s\n%s\n%s" % [activity.get("state_label", "等待"), activity.get("title", "基础作息"), activity.get("reason", ""), activity.get("detail", "")]
 		if current.is_empty():
 			current = str(_profile.get("location", {}).get("name", "位置待同步"))
 		if destination.is_empty():

@@ -13,6 +13,7 @@ from backend.world import AREAS, grid_of
 from backend.event_stream import EventStream
 from backend.scheduler import Scheduler
 from backend.playback import dialogue_segments
+from backend.daily_planner import DynamicSchedule
 
 
 class SocialService(GameService):
@@ -41,6 +42,7 @@ class SocialService(GameService):
             row=db.execute("SELECT value FROM social_state WHERE key='clock'").fetchone()
             if row:self.world.clock.minutes=max(self.world.clock.now,float(row[0]))
         self.scheduler=Scheduler(self)
+        self.planner=DynamicSchedule(self)
         for name in self.npcs:self.capture_memory(name)
 
     @contextmanager
@@ -82,6 +84,7 @@ class SocialService(GameService):
         if self._closed:return
         self._closed=True
         self.scheduler.stop()
+        self.planner.stop()
         self.save_clock()
         self.engine.close()
 
@@ -121,11 +124,17 @@ class SocialService(GameService):
         return (a!=b and a in self.npcs and b in self.npcs and
                 AREAS[self.world.area_of(a)]['id']==AREAS[self.world.area_of(b)]['id'] and self.world.can_chat(a,b)[0])
 
-    def report_arrival(self,npc_name,grid_id=None,map_id=None,room_id=None):
+    def assign_destination(self,name,area):
+        with self.lock:
+            return self.planner.command(name,area)
+
+    def report_arrival(self,npc_name,grid_id=None,map_id=None,room_id=None,arrived=None,activity_id=None):
         with self.lock:
             if npc_name in self.busy:return True,'busy'
             result=super().report_arrival(npc_name,grid_id,map_id,room_id)
-            if result[0]:self.seen[npc_name]=time.monotonic()
+            if result[0]:
+                self.seen[npc_name]=time.monotonic()
+                self.planner.arrived(npc_name,arrived,activity_id)
         if result[0] and result[1]=='moved':
             self.emit('movement',npc=npc_name,area=self.world.area_of(npc_name))
         return result
@@ -310,9 +319,11 @@ class SocialService(GameService):
         with self.lock:
             self.sync_clock()
             result=super().world_snapshot()
-            for name,npc in result['npcs'].items():npc['busy']=name in self.busy
+            for name,npc in result['npcs'].items():
+                npc['busy']=name in self.busy or name in self.reflecting
+                npc['activity']=self.planner.describe(name)
             targeted=set()
-            for m in self.active_meetings():
+            for m in self.planner.eligible_meetings():
                 for name in (m['a'],m['b']):
                     if name in targeted:continue
                     targeted.add(name)
@@ -430,10 +441,12 @@ def install(app,get_service):
         def record():
             for name in req.participants:
                 s.observe(name,req.text,0.4);s.emit('memory_changed',npc=name)
-            s.world.inject_event(req.text,req.participants)
-            # 事件引导实际会面；队列依次安排，绝不直接传送。
-            if len(req.participants)>1:
-                for name in req.participants[1:]:s.request_meeting(req.participants[0],name,trigger=req.text)
+            with s.lock:
+                notice=s.world.inject_event(req.text,req.participants)
+                planned=s.planner.notice(req.text,req.participants,notice['key'])
+                # 有明确活动含义的通知交给日程；其它群体事件保留原会面队列。
+                if not planned and len(req.participants)>1:
+                    for name in req.participants[1:]:s.request_meeting(req.participants[0],name,trigger=req.text)
             s.emit('world_event',text=req.text,participants=req.participants)
         with s.lock:
             if s.future and not s.future.done():raise HTTPException(409,'上一项维护/事件尚未完成')
@@ -447,6 +460,22 @@ def install(app,get_service):
         with s.database() as db:
             return [dict(id=row[0],game_time=row[1]) for row in db.execute(
                 'SELECT id,game_time FROM m3_memory_history WHERE npc=? ORDER BY id DESC LIMIT 200',(name,))][::-1]
+
+    @app.get('/npcs/{name}/activities')
+    def activities(name:str):
+        s=get_service()
+        with s.lock:
+            if name not in s.npcs:raise HTTPException(404,'未知角色')
+            return s.planner.listing(name)
+
+    @app.post('/npcs/{name}/activities/{identity}/cancel')
+    def cancel_activity(name:str,identity:str):
+        s=get_service()
+        with s.lock:
+            if name not in s.npcs or identity not in s.planner.records or s.planner.records[identity]['npc']!=name:
+                raise HTTPException(404,'活动不存在')
+            if not s.planner.cancel(name,identity):raise HTTPException(409,'会面已开始处理，请等待结束')
+            return {'ok':True}
 
     @app.get('/debug/events')
     def history(after:int=0):return get_service().bus.history(max(0,after))

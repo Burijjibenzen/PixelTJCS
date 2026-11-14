@@ -42,6 +42,18 @@ func setup(id: String, display_name: String, char_id: int, home: String, tint: C
 func is_travelling() -> bool:
 	return not _sections.is_empty()
 
+func hit_test(viewport_position: Vector2) -> bool:
+	# 按人物画面和姓名判断点击，不局限于脚下的小碰撞体；兼容镜头缩放。
+	var texture := sprite.sprite_frames.get_frame_texture(sprite.animation, sprite.frame)
+	if texture:
+		var size := texture.get_size()
+		var origin := sprite.offset - (size * 0.5 if sprite.centered else Vector2.ZERO)
+		var point := sprite.get_global_transform_with_canvas().affine_inverse() * viewport_position
+		if Rect2(origin, size).grow(3.0).has_point(point):
+			return true
+	var label_point := label.get_global_transform_with_canvas().affine_inverse() * viewport_position
+	return Rect2(Vector2.ZERO, label.size).has_point(label_point)
+
 func go_to_room(rid: String) -> void:
 	go_to_location(map_id, rid)
 

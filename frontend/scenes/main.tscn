@@ -68,7 +68,7 @@ offset_right = 900.0
 offset_bottom = -8.0
 theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
 theme_override_constants/outline_size = 4
-text = "1/2/3 切楼    方向键平移    滚轮缩放    空格跟随 NPC    Esc 取消    V / F3 查看分区"
+text = "点击人物：跟随/资料　1/2/3 切楼　方向键平移　滚轮缩放　空格切换　Esc 取消　V 分区"
 
 [node name="BtnAdv1h" type="Button" parent="UI"]
 anchor_left = 1.0

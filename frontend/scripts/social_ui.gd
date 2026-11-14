@@ -48,6 +48,9 @@ var notice_until := 0.0
 var speed_picker: OptionButton
 var profile_panel
 var profile_hidden: Array[Control] = []
+var drag_handle: Label
+var _dragging := false
+var _drag_offset := Vector2.ZERO
 
 func setup(npcs: Array) -> void:
 	actors = npcs
@@ -73,7 +76,7 @@ func _ready() -> void:
 	panel = PanelContainer.new()
 	panel.position = Vector2(760, 55)
 	panel.size = Vector2(500, 530)
-	# 使用不透明背景，避免原日程面板和地图穿透影响阅读。
+	# 使用不透明背景，避免地图穿透影响阅读。
 	var background := StyleBoxFlat.new()
 	background.bg_color = Color(0.08, 0.10, 0.14, 1.0)
 	background.content_margin_left = 12
@@ -87,6 +90,27 @@ func _ready() -> void:
 	open.pressed.connect(func(): panel.visible = not panel.visible)
 	var box := VBoxContainer.new()
 	panel.add_child(box)
+	var title_row := HBoxContainer.new()
+	box.add_child(title_row)
+	drag_handle = Label.new()
+	drag_handle.text = "社交观察　·　拖动此处移动"
+	drag_handle.custom_minimum_size.y = 28
+	drag_handle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	drag_handle.add_theme_color_override("font_color", Color(0.70, 0.83, 0.90))
+	drag_handle.mouse_filter = Control.MOUSE_FILTER_STOP
+	drag_handle.mouse_default_cursor_shape = Control.CURSOR_MOVE
+	drag_handle.tooltip_text = "按住鼠标左键拖动标题栏，调整面板位置"
+	drag_handle.gui_input.connect(_drag_handle_input)
+	title_row.add_child(drag_handle)
+	var collapse := Button.new()
+	collapse.text = "收起"
+	collapse.pressed.connect(func():
+		_dragging = false
+		panel.hide()
+	)
+	title_row.add_child(collapse)
+	panel.resized.connect(_clamp_panel_position)
+	get_viewport().size_changed.connect(_clamp_panel_position)
 	status = Label.new()
 	status.text = "等待后端连接"
 	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -212,6 +236,52 @@ func _ready() -> void:
 	tabs.tab_changed.connect(_on_tab_changed)
 	tabs.current_tab = 5
 	_on_tab_changed(tabs.current_tab)
+	_clamp_panel_position.call_deferred()
+
+
+func _drag_handle_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		_dragging = true
+		_drag_offset = event.global_position - panel.position
+		drag_handle.accept_event()
+
+
+func _input(event: InputEvent) -> void:
+	if not _dragging:
+		return
+	if not panel.visible:
+		_dragging = false
+		return
+	if event is InputEventMouseMotion:
+		if not event.button_mask & MOUSE_BUTTON_MASK_LEFT:
+			_dragging = false
+			return
+		panel.position = event.position - _drag_offset
+		_clamp_panel_position()
+		get_viewport().set_input_as_handled()
+	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if not event.pressed:
+			_dragging = false
+		get_viewport().set_input_as_handled()
+
+
+func _clamp_panel_position() -> void:
+	if not is_instance_valid(panel):
+		return
+	var bounds := (get_viewport().get_visible_rect().size - panel.size).max(Vector2.ZERO)
+	panel.position = panel.position.clamp(Vector2.ZERO, bounds)
+
+
+func show_profile(npc_name: String) -> bool:
+	for index in picker.item_count:
+		if picker.get_item_text(index) == npc_name:
+			panel.show()
+			tabs.current_tab = 5
+			picker.select(index)
+			picker.item_selected.emit(index)
+			_clamp_panel_position()
+			return true
+	return false
 
 
 func _on_tab_changed(index: int) -> void:

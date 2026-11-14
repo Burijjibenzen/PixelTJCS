@@ -10,6 +10,7 @@ var follow_idx := -1
 var current_map := Game.FLOOR3
 var _sched_timer := 2.0
 var _dbg_prev := false
+var social_ui
 
 @onready var camera := $Cam
 @onready var floor_picker: OptionButton = $UI/FloorPicker
@@ -41,9 +42,9 @@ func _ready() -> void:
 	$DebugDraw.setup(npcs)
 	_select_floor(0)
 	# M3: 新增独立社交 UI；地图和日程逻辑保持原样。
-	var social = load("res://scripts/social_ui.gd").new()
-	social.setup(npcs)
-	add_child(social)
+	social_ui = load("res://scripts/social_ui.gd").new()
+	social_ui.setup(npcs)
+	add_child(social_ui)
 	ApiClient.setup(npcs)
 	ApiClient.online_changed.connect(_on_online_changed)
 	$UI/BtnAdv1h.pressed.connect(func() -> void: ApiClient.advance_time(60))
@@ -80,6 +81,22 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			_select_floor(event.keycode - KEY_1)
 			get_viewport().set_input_as_handled()
 
+func _unhandled_input(event: InputEvent) -> void:
+	# GUI先消费点击，面板和地图试走中的交互不会点中背后的NPC。
+	if $MapBrowser.visible or not event is InputEventMouseButton or not event.pressed or event.button_index != MOUSE_BUTTON_LEFT:
+		return
+	var picked: NPC = null
+	for npc in npcs:
+		if npc.map_id != current_map or not npc.is_visible_in_tree() or not npc.hit_test(event.position):
+			continue
+		# 与Actors的Y排序一致；重叠时优先选最前面的人物。
+		if picked == null or npc.global_position.y >= picked.global_position.y:
+			picked = npc
+	if picked != null:
+		follow_npc(picked)
+		social_ui.show_profile(picked.npc_name)
+		get_viewport().set_input_as_handled()
+
 func _select_floor(index: int) -> void:
 	cancel_follow()
 	var map_id: String = Game.MAP_IDS[index]
@@ -113,7 +130,10 @@ func cycle_follow() -> void:
 	if npcs.is_empty():
 		return
 	follow_idx = (follow_idx + 1) % npcs.size()
-	var npc := npcs[follow_idx]
+	follow_npc(npcs[follow_idx])
+
+func follow_npc(npc: NPC) -> void:
+	follow_idx = npcs.find(npc)
 	_show_floor(npc.map_id, npc.global_position)
 	camera.set_target(npc)
 	$UI/InfoLabel.text = "镜头跟随：" + npc.npc_name

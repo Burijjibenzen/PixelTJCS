@@ -138,3 +138,16 @@ class NoticeBoardConfig:
 
 
 NOTICEBOARD = NoticeBoardConfig()
+
+
+@dataclass
+class PlayerConfig:
+    name_max_chars: int = 24
+    message_max_chars: int = 500
+    context_turns: int = 6
+    history_limit: int = 50
+    memory_importance: float = 0.45
+    relation_max_delta: float = 6.0
+
+
+PLAYER = PlayerConfig()

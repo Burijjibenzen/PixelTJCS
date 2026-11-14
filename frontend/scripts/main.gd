@@ -12,6 +12,7 @@ var _sched_timer := 2.0
 var _dbg_prev := false
 var social_ui
 var notice_ui
+var player_ui
 
 @onready var camera := $Cam
 @onready var floor_picker: OptionButton = $UI/FloorPicker
@@ -51,6 +52,9 @@ func _ready() -> void:
 	add_child(notice_ui)
 	social_ui.notice_board_requested.connect(_open_notice_board)
 	$MapBrowser.notice_board_requested.connect(_open_notice_board)
+	player_ui = load("res://scripts/player_chat.gd").new()
+	player_ui.setup(npcs)
+	add_child(player_ui)
 	ApiClient.setup(npcs)
 	ApiClient.online_changed.connect(_on_online_changed)
 	$UI/BtnAdv1h.pressed.connect(func() -> void: ApiClient.advance_time(60))
@@ -76,7 +80,9 @@ func _process(delta: float) -> void:
 			_sched_timer = randf_range(4.0, 7.0)
 			_random_schedule()
 
-	var debug_key := Input.is_key_pressed(KEY_F3) or Input.is_key_pressed(KEY_V)
+	var focus := get_viewport().gui_get_focus_owner()
+	var typing := focus is LineEdit or focus is TextEdit
+	var debug_key := not typing and (Input.is_key_pressed(KEY_F3) or Input.is_key_pressed(KEY_V))
 	if debug_key and not _dbg_prev:
 		$DebugDraw.set_enabled(not $DebugDraw.enabled)
 	_dbg_prev = debug_key
@@ -101,6 +107,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if picked != null:
 		follow_npc(picked)
 		social_ui.show_profile(picked.npc_name)
+		if player_ui.active:player_ui.open_for(picked.npc_name)
 		get_viewport().set_input_as_handled()
 		return
 	var world_point: Vector2 = get_global_transform_with_canvas().affine_inverse() * event.position

@@ -7,6 +7,7 @@
 带原因留痕（last_reason），供前端关系面板展示"为什么变了"。
 """
 
+import json
 import sqlite3
 from typing import Dict, Optional, Tuple
 
@@ -46,6 +47,7 @@ class RelationGraph:
                        PRIMARY KEY (a, b)
                    )"""
             )
+            conn.execute('CREATE TABLE IF NOT EXISTS relation_effects(id TEXT PRIMARY KEY,payload TEXT NOT NULL)')
 
     def _load_all(self) -> None:
         with self._connect() as conn:
@@ -110,6 +112,24 @@ class RelationGraph:
             if name in (x, y)
             for other in [(y if x == name else x)]
         }
+
+    def apply_delta_once(self, a: str, b: str, delta: float, reason: str, effect_id: str) -> dict:
+        """单轮玩家对话的关系与幂等标记在同一事务提交。"""
+        key = self._key(a, b)
+        with self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            previous = conn.execute('SELECT payload FROM relation_effects WHERE id=?', (effect_id,)).fetchone()
+            if previous:
+                result = json.loads(previous[0])
+            else:
+                row = conn.execute('SELECT score FROM relations WHERE a=? AND b=?', key).fetchone()
+                old = row[0] if row else DEFAULT_SCORE
+                score = max(0.0, min(100.0, old + delta))
+                result = dict(score=score, delta=score-old, reason=reason)
+                conn.execute('INSERT OR REPLACE INTO relations VALUES(?,?,?,?)', (*key, score, reason))
+                conn.execute('INSERT INTO relation_effects VALUES(?,?)', (effect_id, json.dumps(result, ensure_ascii=False)))
+        self._cache[key], self._reason[key] = result['score'], result['reason']
+        return result
 
     def matrix(self) -> Dict[str, Dict[str, Optional[float]]]:
         """全量矩阵（缺省项为 None 表示"陌生人"），供 /relations 接口。"""

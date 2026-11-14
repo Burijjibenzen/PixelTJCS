@@ -50,7 +50,7 @@ text = "镜头: 自由"
 [node name="ClockLabel" type="Label" parent="UI"]
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -260.0
+offset_left = -390.0
 offset_top = 8.0
 offset_right = -12.0
 offset_bottom = 30.0
@@ -93,6 +93,7 @@ offset_right = -272.0
 offset_bottom = -12.0
 focus_mode = 0
 text = "快进1小时"
+tooltip_text = "连续推进1个游戏小时，完成后恢复原倍率"
 
 [node name="BtnAdv4h" type="Button" parent="UI"]
 anchor_left = 1.0
@@ -105,6 +106,19 @@ offset_right = -184.0
 offset_bottom = -12.0
 focus_mode = 0
 text = "快进4小时"
+tooltip_text = "连续推进4个游戏小时，完成后恢复原倍率"
+
+[node name="SpeedPicker" type="OptionButton" parent="UI"]
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -176.0
+offset_top = -42.0
+offset_right = -12.0
+offset_bottom = -12.0
+focus_mode = 0
+tooltip_text = "选择连续倍率；原速下现实1秒 = 游戏10分钟"
 
 [node name="MapBrowserButton" type="Button" parent="UI"]
 offset_left = 12.0

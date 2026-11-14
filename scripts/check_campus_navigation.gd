@@ -21,6 +21,15 @@ func run_checks() -> void:
 	main = load("res://scenes/main.tscn").instantiate()
 	root.add_child(main)
 	main.set_process(false)
+	# 导航回归只观察本机物理移动，不能连接开发中的真实后端改变目标或倍率。
+	for child in main.get_children():
+		if child is CanvasLayer:
+			child.set_process(false)
+	var api := root.get_node("ApiClient")
+	api.backend_online = false
+	api.simulation_paused = false
+	var test_speed := OS.get_environment("ROAM_TEST_SPEED")
+	api.simulation_speed = api.BASE_SPEED * (1.0 if test_speed.is_empty() else float(test_speed))
 	for actor in main.npcs:
 		actor.set_physics_process(false)
 	subject = main.npcs.filter(func(actor): return actor.npc_id == "zhou_chong").front()

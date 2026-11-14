@@ -41,7 +41,7 @@ class SocialTests(unittest.TestCase):
         for p in reversed(self.patches):p.stop()
         gc.collect();self.tmp.cleanup()
     def release(self):
-        self.s.busy.clear();self.s.release_at.clear();self.s.live_lines.clear()
+        self.s.busy.clear();self.s.live_lines.clear()
     def tick(self,elapsed=0):
         with patch.object(SOCIAL,'base_chat_probability',0):self.s.scheduler.tick(time.monotonic(),elapsed)
     def finish(self):
@@ -70,7 +70,7 @@ class SocialTests(unittest.TestCase):
         with patch.object(SOCIAL,'base_chat_probability',1),patch('backend.scheduler.random.random',return_value=0),patch.object(self.s,'run_conversation',wraps=self.s.run_conversation) as entry:
             self.s.scheduler.tick(time.monotonic(),0.5);self.finish()
         self.assertEqual(2,entry.call_count)
-        self.assertEqual(4,len(self.s.busy))
+        self.assertFalse(self.s.busy)
         self.assertEqual(485,self.s.world.clock.now)
 
     def test_model_can_decline_natural_chat(self):
@@ -105,7 +105,7 @@ class SocialTests(unittest.TestCase):
         self.tick();self.assertEqual('waiting',m['state'])
         self.release();self.tick();self.assertEqual('cooldown',m['state'])
         self.s.advance_time(121,maintenance=False);self.tick();self.finish()
-        self.assertEqual('playing',m['state'])
+        self.assertEqual('completed',m['state'])
 
     def test_meeting_target_survives_schedule_cancel_timeout(self):
         other=next(x for x in AREAS if AREAS[x]['id']!=self.area)
@@ -123,9 +123,10 @@ class SocialTests(unittest.TestCase):
         barrier=threading.Barrier(2);original=self.s.engine.run
         def concurrent(*a,**kw):barrier.wait(timeout=10);return original(*a,**kw)
         with patch.object(self.s.engine,'run',side_effect=concurrent):self.tick();self.finish()
-        self.assertEqual(['playing','playing','ready'],[m['state'] for m in meetings])
-        self.s.release_at[tuple(sorted(names[:2]))]=0;self.s.paused=True;self.tick()
-        self.assertFalse(set(names[:2])&self.s.busy);self.assertTrue(set(names[2:4])<=self.s.busy)
+        self.assertEqual(['completed','completed','ready'],[m['state'] for m in meetings])
+        self.assertFalse(self.s.busy)
+        self.tick();self.finish()
+        self.assertEqual('completed',meetings[2]['state'])
 
     def test_gossip_actual_transcript_source_dedup_and_hop_limit(self):
         self.s.run_conversation(self.a,self.b,'实验结果');self.release()
@@ -226,5 +227,139 @@ class SocialTests(unittest.TestCase):
         self.assertTrue(result['reflected'])
         self.assertEqual(1,len(self.s.memory.get_reflections(self.a,10)))
         self.assertEqual(0,self.s.memory.count_unreflected(self.a))
+
+    def test_clock_rates_pause_and_partial_control(self):
+        self.assertEqual(10,self.s.speed)
+        self.s.step_clock(2)
+        self.assertEqual(500,self.s.world.clock.now)
+        client=self.client()
+        try:
+            self.assertEqual(200,client.post('/world/speed',json={'speed':40}).status_code)
+            self.s.step_clock(2)
+            self.assertEqual(580,self.s.world.clock.now)
+            client.post('/social/control',json={'paused':True}).raise_for_status()
+            self.assertEqual(40,self.s.speed)
+            self.s.step_clock(100)
+            self.assertEqual(580,self.s.world.clock.now)
+            client.post('/world/speed',json={'speed':20}).raise_for_status()
+            self.assertTrue(self.s.paused)
+            client.post('/social/control',json={'paused':False}).raise_for_status()
+            self.s.step_clock(0.5)
+            self.assertEqual(590,self.s.world_snapshot()['minutes'])
+        finally:client.close()
+
+    def test_http_fast_forward_is_continuous_and_restores_speed(self):
+        from backend import api
+        client=TestClient(api.app)
+        try:
+            with patch.object(api,'get_service',return_value=self.s):
+                response=client.post('/world/advance',json={'minutes':10,'speed':4})
+                response.raise_for_status()
+                self.assertEqual(480,self.s.world.clock.now)
+                self.assertEqual(490,response.json()['target_minutes'])
+                self.s.step_clock(2)
+                self.assertEqual(488,self.s.world.clock.now)
+                self.s.step_clock(1)
+                self.assertEqual(495,self.s.world.clock.now)
+                self.assertEqual(10,self.s.speed)
+                self.assertIsNone(self.s.fast_forward_target)
+                self.assertEqual(422,client.post('/world/advance',json={'minutes':10,'speed':0}).status_code)
+        finally:client.close()
+
+    def test_fast_forward_pause_and_manual_rate_cancel_target(self):
+        self.s.set_control(speed=2)
+        self.s.fast_forward(20,8)
+        self.s.step_clock(1)
+        self.assertEqual(488,self.s.world.clock.now)
+        self.s.set_control(paused=True)
+        self.s.step_clock(30)
+        self.assertEqual(488,self.s.world.clock.now)
+        self.assertEqual(500,self.s.fast_forward_target)
+        self.s.set_control(paused=False,speed=4)
+        self.assertIsNone(self.s.fast_forward_target)
+        self.s.step_clock(10)
+        self.assertEqual(528,self.s.world.clock.now)
+
+    def test_rate_switch_settles_old_elapsed_time_before_using_new_rate(self):
+        self.s.clock_sample=100.0
+        try:
+            with patch('backend.social.time.monotonic',return_value=100.1):
+                self.s.set_control(speed=8)
+            self.assertAlmostEqual(481,self.s.world.clock.now)
+            self.s.sync_clock(100.5)
+            self.assertAlmostEqual(484.2,self.s.world.clock.now)
+            self.s.sync_clock(100.4)
+            self.assertEqual(100.5,self.s.clock_sample)
+            with patch('backend.social.time.monotonic',return_value=100.6):
+                self.s.set_control(paused=True)
+            self.assertAlmostEqual(485,self.s.world.clock.now)
+            with patch('backend.social.time.monotonic',return_value=110.0):
+                self.s.set_control(paused=False,speed=1)
+            self.s.sync_clock(111.0)
+            self.assertAlmostEqual(486,self.s.world.clock.now)
+        finally:self.s.clock_sample=None
+
+    def test_burst_dialogue_replaces_current_line_without_holding_actors(self):
+        result=self.s.run_conversation(self.a,self.b,'恢复原版显示节奏')
+        run_id=result['conversation_id']
+        latest=self.s.live_lines[run_id]['data']
+        self.assertEqual(6,latest['sequence'])
+        self.assertEqual([10],[part['seconds'] for part in latest['segments']])
+        self.assertFalse(self.s.busy)
+        # 气泡仍在显示时，可以安排同一人物参与另一场对话。
+        self.assertIsNotNone(self.s.run_conversation(self.a,self.c,'继续原有社交行为'))
+        self.assertFalse(self.s.busy)
+
+    def test_live_dialogue_reconnect_restores_latest_line_and_deduplicates(self):
+        payload=dict(conversation_id='read-test',participants=[self.a,self.b],speaker=self.a,text='先读完这句话')
+        first=self.s.emit('dialogue_line',event_key='read-test:1',sequence=1,**payload)
+        self.s.emit('dialogue_line',event_key='read-test:2',sequence=2,**payload)
+        duplicate=self.s.emit('dialogue_line',event_key='read-test:1',sequence=1,**payload)
+        self.assertEqual(first['id'],duplicate['id'])
+        stored=self.s.live_lines['read-test']
+        self.assertEqual(2,stored['data']['sequence'])
+        with patch('backend.social.time.monotonic',return_value=stored['start']+1):
+            client=self.client()
+            try:
+                with client.websocket_connect('/ws/events') as ws:
+                    live=ws.receive_json()['live']
+                    self.assertEqual([2],[line['sequence'] for line in live])
+                    self.assertEqual(1,live[0]['playback_elapsed'])
+            finally:client.close()
+
+    def test_original_ten_second_segments_do_not_scale_with_world_speed(self):
+        from backend.playback import dialogue_segments
+        self.assertEqual(10,dialogue_segments('你好')[0]['seconds'])
+        self.assertEqual(10,dialogue_segments('长'*60)[0]['seconds'])
+        parts=dialogue_segments('长'*125)
+        self.assertEqual([60,60,5],[len(part['text']) for part in parts])
+        self.assertEqual(30,sum(part['seconds'] for part in parts))
+        self.s.set_control(speed=8)
+        self.assertEqual(parts,dialogue_segments('长'*125))
+
+    def test_three_day_fast_forward_restores_speed_and_runs_final_forgetting(self):
+        from concurrent.futures import Future
+        self.s.observe(self.a,'快进前记下的一件琐事',0.2)
+        pending=Future()
+        self.s.future=pending
+        result=self.s.fast_forward(4320)
+        self.assertEqual(480,self.s.world.clock.now)
+        self.assertEqual(480+4320,result['target_minutes'])
+        self.s.step_clock(12)
+        self.assertEqual(480+720,self.s.world.clock.now)
+        self.s.set_control(paused=True)
+        self.s.step_clock(100)
+        self.assertEqual(480+720,self.s.world.clock.now)
+        self.s.set_control(paused=False)
+        self.s.step_clock(60)
+        self.assertEqual(480+4320,self.s.world.clock.now)
+        self.assertEqual(10,self.s.speed)
+        self.assertIsNone(self.s.fast_forward_target)
+        self.tick()
+        self.assertTrue(self.s.maintenance_due)
+        pending.set_result(None)
+        self.tick();self.s.future.result(timeout=20)
+        self.assertFalse(self.s.maintenance_due)
+        self.assertTrue(self.s.memory.get_forgotten(self.a,50))
 
 if __name__=='__main__':unittest.main()

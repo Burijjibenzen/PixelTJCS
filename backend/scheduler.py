@@ -46,11 +46,15 @@ class Scheduler:
         self.graph = graph.compile(checkpointer=service.engine.checkpointer)
 
     def start(self):
+        with self.s.lock:self.s.clock_sample=time.monotonic()
         self.thread = threading.Thread(target=self.loop,daemon=True,name='M3-clock')
         self.thread.start()
 
     def stop(self):
         self.stop_event.set()
+        with self.s.lock:
+            self.s.sync_clock()
+            self.s.clock_sample=None
         if self.thread:
             self.thread.join(timeout=3)
         self.pool.shutdown(wait=True,cancel_futures=True)
@@ -70,25 +74,20 @@ class Scheduler:
     def tick(self,now,elapsed=0):
         s=self.s
         with s.lock:
-            if not s.paused:
-                s.advance_time(elapsed*s.speed, maintenance=False)
-            for pair,deadline in list(s.release_at.items()):
-                if now>=deadline:
-                    s.busy.difference_update(pair)
-                    del s.release_at[pair]
-                    for key,line in list(s.live_lines.items()):
-                        if set(line['participants'])==set(pair):
-                            del s.live_lines[key]
-                            s.emit('conversation_released',conversation_id=key,participants=list(pair))
-                    for m in s.active_meetings():
-                        if m['state']=='playing' and set(pair)=={m['a'],m['b']}:
-                            m.update(state='completed',detail='会面完成')
+            if s.clock_sample is None:s.step_clock(elapsed)
+            else:s.sync_clock(now)
+            # 只清理过期显示数据，气泡生命周期不参与角色占用。
+            for key,playback in list(s.live_lines.items()):
+                if playback['end']<=now:
+                    del s.live_lines[key]
+                    s.emit('conversation_released',conversation_id=key,participants=playback['participants'])
             self.jobs={p:f for p,f in self.jobs.items() if not f.done()}
             if not s.paused:
                 self.meetings(now,elapsed)
                 self.natural(now)
-                if s.world.clock.now-self.last_maintenance>=SOCIAL.maintenance_minutes and (s.future is None or s.future.done()):
+                if (s.maintenance_due or s.world.clock.now-self.last_maintenance>=SOCIAL.maintenance_minutes) and (s.future is None or s.future.done()):
                     self.last_maintenance=s.world.clock.now
+                    s.maintenance_due=False
                     s.future=self.maintenance.submit(s.maintain)
         # 快照推送不能等待模型；也不在 async WebSocket 线程内执行数据库操作。
         if now-self.last_snapshot>=1:
@@ -99,7 +98,7 @@ class Scheduler:
         s=self.s;claimed=set()
         for m in s.active_meetings():
             pair={m['a'],m['b']};conflict=bool(pair&claimed);claimed.update(pair)
-            if m['state'] in ('talking','playing','deciding'):
+            if m['state'] in ('talking','deciding'):
                 continue
             if conflict or not s.available(*pair):
                 m.update(state='waiting',detail='等待前序会面或角色空闲');continue
@@ -163,8 +162,7 @@ class Scheduler:
             s.fail(state['conversation_id'],a,b,type(exc).__name__,state.get('meeting_id'))
         finally:
             with s.lock:
-                if pair not in s.release_at:
-                    s.busy.difference_update(pair)
+                s.busy.difference_update(pair)
                 m=s.meeting(state.get('meeting_id',''))
                 if m and m['state']=='deciding':
                     m.update(state='waiting',detail='条件变化，等待下一次调度')

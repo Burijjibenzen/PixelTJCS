@@ -1,5 +1,5 @@
 extends CanvasLayer
-## 独立楼层浏览器。试走使用各楼层自己的网格，主场景的 NPC 保留在三楼。
+## 独立楼层浏览器。试走使用独立网格，楼梯出口与 NPC 寻路保持一致。
 
 const IDS := ["jishilou_floor3", "jishilou_floor4", "zhixinguan_floor2"]
 const NAMES := ["济事楼 · 三楼", "济事楼 · 四楼", "智信馆 · 二楼"]
@@ -29,8 +29,13 @@ var open_doors := {}  # 按楼层与门 id 保存，切换楼层后仍有效。
 var point_display_by_floor := {}
 var previous_pause := false
 var active := false
+var stair_menu: PopupMenu
+var stair_options: Array = []
 
 func _ready() -> void:
+	stair_menu = PopupMenu.new()
+	add_child(stair_menu)
+	stair_menu.id_pressed.connect(_choose_stair)
 	for label in NAMES:
 		bar.get_node("Floor").add_item(label)
 	bar.get_node("Floor").item_selected.connect(show_floor)
@@ -63,6 +68,7 @@ func close() -> void:
 	if not active:
 		return
 	active = false
+	stair_menu.hide()
 	if get_tree().current_scene == self:
 		get_tree().quit()
 		return
@@ -72,6 +78,7 @@ func close() -> void:
 func show_floor(index: int, arrival := NO_CELL) -> void:
 	if index < 0 or index >= IDS.size():
 		return
+	stair_menu.hide()
 	var dir := "res://assets/map/%s/" % IDS[index]
 	var packed := load(dir + "Map.tscn") as PackedScene
 	var meta := Game._load_json(dir + "manifest.json")
@@ -176,15 +183,30 @@ func _use(item: Dictionary) -> void:
 			status.text = "%s　·　%s" % [item.name, "已打开，可通过" if opening else "已关闭"]
 			marks.queue_redraw()
 		"stair":
-			var destination := IDS.find(item.get("destination_map", ""))
-			if destination >= 0 and item.has("destination_cell"):
-				show_floor(destination, _cell(item.destination_cell))
-				status.text = "已到达%s的楼梯口" % NAMES[destination]
+			stair_options = Game.stair_destinations(IDS[current_floor], str(item.id))
+			if stair_options.size() == 1:
+				_choose_stair(0)
+			elif stair_options.size() > 1:
+				stair_menu.clear()
+				for index in stair_options.size():
+					stair_menu.add_item("前往" + Game.map_name(stair_options[index].map_id), index)
+				stair_menu.position = Vector2i(get_viewport().get_mouse_position())
+				stair_menu.popup()
+				status.text = "请选择上楼或前往智信馆；跨馆省略室外步行"
 			else:
 				status.text = "%s　·　%s" % [item.name, item.get("text", "通往楼层图以外")]
 		_:
 			var body := str(item.get("text", ""))
 			status.text = str(item.name) if body.is_empty() else "%s　·　%s" % [item.name, body]
+	status.tooltip_text = status.text
+
+
+func _choose_stair(index: int) -> void:
+	if index < 0 or index >= stair_options.size():
+		return
+	var destination: Dictionary = stair_options[index]
+	show_floor(IDS.find(destination.map_id), destination.cell)
+	status.text = "已到达%s的楼梯口" % Game.map_name(destination.map_id)
 	status.tooltip_text = status.text
 
 func _has_walkable_floor(cell: Vector2i) -> bool:

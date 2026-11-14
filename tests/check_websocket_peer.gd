@@ -2,7 +2,6 @@ extends SceneTree
 ## M3: 真实 TCP 经过 SocialUI 收包入口，同时验证日志、头顶气泡、首次补发。
 class Actor extends Node2D:
 	var npc_name: String
-	var social_playing := false
 func _initialize() -> void:
 	call_deferred("verify")
 func verify() -> void:

@@ -12,16 +12,21 @@ from backend.config import SOCIAL
 from backend.world import AREAS, grid_of
 from backend.event_stream import EventStream
 from backend.scheduler import Scheduler
+from backend.playback import dialogue_segments
 
 
 class SocialService(GameService):
     def __init__(self,fresh_db=False):
         super().__init__(fresh_db=fresh_db)
         self.lock=threading.RLock()
-        self.busy=set();self.reflecting=set();self.seen={};self.release_at={}
+        self.busy=set();self.reflecting=set();self.seen={}
         self.meetings=[];self.live_lines={};self.future=None
         self._closed=False
         self.paused=False;self.speed=SOCIAL.speed;self.epoch=uuid.uuid4().hex
+        self.fast_forward_target=None
+        self.resume_speed=SOCIAL.speed
+        self.clock_sample=None
+        self.maintenance_due=False
         self.bus=EventStream(self.memory.cfg.db_path,SOCIAL.websocket_queue)
         self.engine.require_colocated=True
         self.engine.emit=self.emit
@@ -48,12 +53,25 @@ class SocialService(GameService):
     def emit(self,kind,**data):
         with self.lock:
             if kind=='dialogue_line':
-                self.live_lines[data['conversation_id']]=dict(data)
+                data['segments']=dialogue_segments(data['text'])
+                current=self.live_lines.get(data['conversation_id'])
+                if current is None or data['sequence']>current['data']['sequence']:
+                    start=time.monotonic()
+                    self.live_lines[data['conversation_id']]=dict(data=dict(data),
+                        participants=data['participants'],start=start,
+                        end=start+sum(segment['seconds'] for segment in data['segments']))
             if kind=='relation_changed':
                 with self.database() as db:
                     db.execute('INSERT OR REPLACE INTO social_changes VALUES(?,?,?)',(*sorted((data['a'],data['b'])),data['delta']))
         if kind=='memory_changed':self.capture_memory(data['npc'])
         return self.bus.publish(kind,game_time=self.world.clock.now,**data)
+
+    def live_dialogue(self):
+        """重连只恢复当前仍在显示的最新一句，不重播之前的台词。"""
+        with self.lock:
+            now=time.monotonic()
+            return [dict(line['data'],playback_elapsed=max(0,now-line['start']))
+                    for line in self.live_lines.values() if line['end']>now]
 
     def save_clock(self):
         with self.database() as db:
@@ -94,7 +112,7 @@ class SocialService(GameService):
         with self.lock:
             m=self.meeting(key)
             if not m:raise HTTPException(404,'会面不存在')
-            if m['state'] in ('deciding','talking','playing'):raise HTTPException(409,'已开始处理，请等待结束')
+            if m['state'] in ('deciding','talking'):raise HTTPException(409,'已开始处理，请等待结束')
             if m in self.active_meetings():m.update(state='cancelled',detail='已取消')
             return m
 
@@ -135,9 +153,10 @@ class SocialService(GameService):
 
     def finish(self,a,b,meeting_id=''):
         with self.lock:
-            self.release_at[tuple(sorted((a,b)))]=time.monotonic()+SOCIAL.bubble_seconds
+            # 模型处理完成即释放角色；气泡只是观察层，不延迟日程或下一场社交。
+            self.busy.difference_update((a,b))
             m=self.meeting(meeting_id)
-            if m:m.update(state='playing',detail='最后一句播放中')
+            if m:m.update(state='completed',detail='会面完成')
         self.save_clock()
 
     def fail(self,run_id,a,b,error,meeting_id=''):
@@ -161,7 +180,7 @@ class SocialService(GameService):
             return result
         finally:
             with self.lock:
-                if tuple(sorted((a,b))) not in self.release_at:self.busy.difference_update((a,b))
+                self.busy.difference_update((a,b))
 
     def gossip_candidate(self,speaker,listener):
         with self.database() as db:
@@ -218,6 +237,56 @@ class SocialService(GameService):
             self.future=self.scheduler.maintenance.submit(self.maintain)
         return {'now':self.world.clock.fmt(),'maintenance':'queued'}
 
+    def step_clock(self,elapsed):
+        """按实际经过时间连续推进；到达快进目标后，剩余时间按原倍速运行。"""
+        with self.lock:
+            if self.paused or self.speed<=0 or elapsed<=0:
+                return
+            if self.fast_forward_target is not None:
+                remaining=max(0,self.fast_forward_target-self.world.clock.now)
+                accelerated=min(elapsed,remaining/self.speed)
+                self.advance_time(accelerated*self.speed,maintenance=False)
+                elapsed-=accelerated
+                if self.world.clock.now>=self.fast_forward_target-1e-8:
+                    self.speed=self.resume_speed
+                    self.fast_forward_target=None
+                    self.maintenance_due=True
+            self.advance_time(elapsed*self.speed,maintenance=False)
+
+    def sync_clock(self,now=None):
+        """切换倍率和暂停前结算上一段现实时间，不能用新倍率回算旧时间。"""
+        with self.lock:
+            if self.clock_sample is not None:
+                now=time.monotonic() if now is None else now
+                now=max(now,self.clock_sample)
+                self.step_clock(max(0,now-self.clock_sample))
+                self.clock_sample=now
+
+    def control_state(self):
+        return dict(paused=self.paused,speed=self.speed,base_speed=SOCIAL.speed,target_minutes=self.fast_forward_target)
+
+    def set_control(self,paused=None,speed=None):
+        with self.lock:
+            self.sync_clock()
+            if paused is not None:self.paused=paused
+            if speed is not None:
+                self.speed=speed
+                self.fast_forward_target=None
+            result=self.control_state()
+        self.emit('world',snapshot=self.world_snapshot())
+        return result
+
+    def fast_forward(self,minutes,speed=SOCIAL.fast_forward_speed):
+        with self.lock:
+            self.sync_clock()
+            if self.fast_forward_target is None:self.resume_speed=self.speed
+            self.fast_forward_target=self.world.clock.now+minutes
+            self.speed=speed
+            self.paused=False
+            result=dict(self.control_state(),now=self.world.clock.fmt())
+        self.emit('world',snapshot=self.world_snapshot())
+        return result
+
     def memory_panel(self,npc_name,snapshot_id=None):
         if snapshot_id is not None:
             with self.database() as db:
@@ -239,6 +308,7 @@ class SocialService(GameService):
 
     def world_snapshot(self):
         with self.lock:
+            self.sync_clock()
             result=super().world_snapshot()
             for name,npc in result['npcs'].items():npc['busy']=name in self.busy
             targeted=set()
@@ -249,7 +319,7 @@ class SocialService(GameService):
                     if m['area'] is not None:
                         area=AREAS[m['area']]
                         result['npcs'][name].update(target_map_id=area['map_id'],target_room_id=area['room_id'],target_grid=grid_of(area['id']))
-            result['social']=dict(meetings=[dict(m) for m in self.meetings],paused=self.paused,speed=self.speed,epoch=self.epoch,
+            result['social']=dict(meetings=[dict(m) for m in self.meetings],**self.control_state(),epoch=self.epoch,
                                  model_configured=bool(getattr(getattr(self.llm,'cfg',None),'api_key','')))
             return result
 
@@ -261,8 +331,8 @@ class Notice(BaseModel):
     text:str=Field(min_length=1,max_length=500)
     participants:list[str]
 class Control(BaseModel):
-    paused:bool=False
-    speed:float=Field(default=SOCIAL.speed,ge=0,le=60)
+    paused:bool|None=None
+    speed:float|None=Field(default=None,ge=0,le=60,allow_inf_nan=False)
 
 
 def install(app,get_service):
@@ -284,7 +354,7 @@ def install(app,get_service):
         queue,latest,replay=s.bus.subscribe(after)
         if after is not None and after>latest:
             after=None;replay=[]  # M3: 数据库被显式重置后，旧游标不能屏蔽新事件。
-        with s.lock:live=[dict(line) for line in s.live_lines.values()]
+        live=s.live_dialogue()
         try:
             await ws.send_json(dict(kind='snapshot',id=after if after is not None else latest,epoch=s.epoch,
                                     live=live,world=await asyncio.to_thread(s.world_snapshot)))
@@ -329,9 +399,7 @@ def install(app,get_service):
     @app.post('/world/speed')
     def control(req:Control):
         s=get_service()
-        with s.lock:s.paused,s.speed=req.paused,req.speed
-        s.emit('world',snapshot=s.world_snapshot())
-        return req.model_dump()
+        return s.set_control(paused=req.paused,speed=req.speed)
 
     @app.get('/world/time')
     def world_time():

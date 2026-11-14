@@ -2,7 +2,6 @@ extends SceneTree
 ## M3: 无模型、无业务数据的前端事件契约回归。
 class Actor extends Node2D:
 	var npc_name: String
-	var social_playing := false
 func _initialize() -> void:
 	call_deferred("verify")
 func check(ok: bool, label: String) -> bool:
@@ -35,27 +34,45 @@ func verify() -> void:
 	if not check(ui.playbacks.size() == 2, "event id deduplication"): return
 	ui.playbacks[0].remaining = 0
 	ui._advance_turn(ui.playbacks[0])
-	if not check(not actors[0].social_playing and actors[2].social_playing, "independent movement release"): return
+	if not check(not ui.bubble_labels["A"].visible and ui.bubble_labels["C"].visible, "independent concurrent displays"): return
 	var long_line := first.duplicate(true)
 	long_line.id = 3
 	long_line.sequence = 2
 	long_line.text = "长台词分段测试内容。".repeat(20)
 	ui._accept_stream(long_line)
 	var playback = ui.playbacks.back()
-	if not check(playback.remaining == 10.0 and playback.event.result.transcript.size() > 1, "ten second segments"): return
+	if not check(playback.remaining == 10.0 and playback.event.result.transcript.size() > 1, "original ten-second long segments"): return
 	var next_line := first.duplicate(true)
 	next_line.id = 4
 	next_line.sequence = 3
 	next_line.speaker = "B"
-	next_line.text = "立即替换"
+	next_line.text = "恢复即时替换"
 	ui._accept_stream(next_line)
-	if not check(not ui.bubble_labels["A"].visible and ui.bubble_labels["B"].visible, "immediate replacement"): return
-	ui._accept_stream({"kind": "conversation_released", "id": 5, "conversation_id": "one"})
+	if not check(not ui.bubble_labels["A"].visible and ui.bubble_labels["B"].visible, "original immediate replacement without queue"): return
 	playback = ui.playbacks.back()
-	ui._advance_turn(playback)
-	if not check(not ui.bubble_labels["B"].visible, "conversation release"): return
+	ui._accept_stream({"kind": "conversation_released", "id": 5, "conversation_id": "one"})
+	if not check(ui.bubble_labels["B"].visible, "behavior release does not control bubble display"): return
+	root.get_node("ApiClient").simulation_speed = 60.0
+	var remaining: float = playback.remaining
+	ui._tick_playbacks(1.0)
+	if not check(is_equal_approx(playback.remaining, remaining - 1.0), "fast forward does not shorten reading time"): return
+	ui._tick_playbacks(9.0)
+	if not check(not ui.bubble_labels["B"].visible, "bubble expires after ten real seconds"): return
 	ui._accept_stream(dict_replay(first, 6))
 	if not check(not ui.bubble_labels["A"].visible, "history replay does not replay expired bubbles"): return
+	# 重连只恢复最新一句当前段落，不重播旧句。
+	var restore := first.duplicate(true)
+	restore.sequence = 10
+	restore.text = "当前句"
+	restore.segments = [{"text": "已读部分", "seconds": 10.0}, {"text": "正在阅读", "seconds": 10.0}]
+	restore.playback_elapsed = 12.0
+	ui._show_line(restore)
+	playback = ui.playbacks.back()
+	if not check(ui.bubble_labels["A"].get_node("Text").text == "正在阅读" and is_equal_approx(playback.remaining, 8.0), "reconnect restores current segment"): return
+	ui._accept_stream({"kind": "error", "id": 7, "conversation_id": "one", "message": "旧错误", "replay": true})
+	if not check(ui.bubble_labels["A"].visible, "replayed old error cannot cancel restored dialogue"): return
+	ui._accept_stream({"kind": "error", "id": 8, "conversation_id": "one", "message": "测试取消"})
+	if not check(not ui.bubble_labels["A"].visible, "error clears only affected display"): return
 	ui._draw_relations([{"a": "A", "b": "B", "score": 70, "level": "好朋友", "reason": "帮助实验", "delta": 3}])
 	if not check(ui.relation_grid.get_child_count() == 25, "relation matrix"): return
 	ui.history_name = "A"
@@ -66,7 +83,7 @@ func verify() -> void:
 	var bubble = ui.bubble_labels["C"]
 	if not check(bubble.position.y + bubble.size.y <= -88, "bubble above head"): return
 	if not check(ui.panel.position.y + ui.panel.size.y <= 720, "panel fits viewport"): return
-	print("PASS: WS event contract, dedup, concurrent bubbles, ten-second segments, replacement, history, matrix, layout")
+	print("PASS: original immediate replacement, ten-second display, reconnect, concurrent bubbles, dedup, history, matrix, layout")
 	quit(0)
 func dict_replay(event: Dictionary, id: int) -> Dictionary:
 	var copy := event.duplicate(true)

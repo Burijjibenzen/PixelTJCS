@@ -5,6 +5,8 @@
 > 配套阅读: `docs/DESIGN.md`（需求与设计）、`docs/MAP_SPEC.md`（地图格式规范）、
 > `README.md`（快速开始）。
 
+> 2026-11-14 接力更新：后端保留原版现实1秒=游戏10分钟；1小时/4小时/3天快进连续运行，完成后恢复原速；对话恢复即时替换，气泡不限制人物行动；试走跨馆出口与NPC共用。细节及复测见 [TIME_AND_DIALOGUE.md](TIME_AND_DIALOGUE.md)，M3实现见 [M3.md](M3.md)。
+
 ## 1. 项目一句话
 
 10 个校园 NPC 在济事楼三楼、四楼和智信馆二楼活动。Godot 依据每层的实际地板和障碍物移动角色。连接后端后，角色按日程或临时指派行动，并上报实际走到的楼层和房间。离线时可直接观看本地演示。
@@ -23,7 +25,7 @@
 | Godot 前端独立运行（地图/寻路/移动/调试视图） | ✅ M2.1 | `frontend/`（§6/§7） |
 | NPC 自由移动 | 三层地图支持楼内、跨层及跨馆寻路 | `frontend/scripts/npc.gd` |
 | 前端↔后端联动（/world 驱动移动 + 位置上报） | ✅ M2.2 | `frontend/scripts/api_client.gd` + `POST /world/report`（§12 第 7 条） |
-| LangGraph 编排迁移 | ❌ M3（接口已预留） | 见 §11.3 |
+| LangGraph 编排迁移 | ✅ M3 | `scheduler.py` / `agent_runtime.py` / `conversation.py`，详见 `M3.md` |
 
 ## 3. 快速开始
 
@@ -244,7 +246,9 @@ NPC 收到目标后，先走到可达的楼梯落脚点，在另一层的对应�
 | 空格 | 循环跟随 10 个 NPC，角色转场时镜头随它切换楼层。 |
 | Esc | 取消跟随 |
 | **F3 或 V** | 显示当前楼层的房间地板、名称、门口标记和 NPC 当前行走段的目标（部分笔记本 F 键默认是多媒体键，按 Fn+F3 或直接按 V） |
-| **快进1小时 / 快进4小时**（右下角按钮） | 游戏内时间控制：后端时钟跳进 → 日程翻段 → NPC 迁移（仅后端在线时可用；离线模式自动隐藏） |
+| **快进1小时 / 快进4小时**（右下角按钮） | 连续加速指定游戏时长，抵达目标后恢复原速度；后端未连接时禁用 |
+| **快进3天**（社交观察面板） | 连续推进4320游戏分钟，默认约72现实秒；自动恢复原速度并补做最终遗忘维护 |
+| **倍速选择** | 原速为现实1秒=游戏10分钟；时钟、移动与动画同步按1/2/4/6倍运行 |
 
 离线可跟随周冲从三楼东侧机房前往四楼学术讲座教室。打开区域调试后，可以看到角色先走到楼梯，到四楼后再走向教室。也可以观察智信馆二楼图书分馆的到达效果。
 
@@ -300,7 +304,7 @@ run_demo.py
 | GET | `/relations` | 全员关系矩阵（0~100，None=陌生人） |
 | GET | `/areas` | 区域地图 |
 | POST | `/conversation` | ★触发 NPC↔NPC 对话 `{a, b, trigger}` |
-| POST | `/world/advance` | ★时间推进+遗忘+反思 `{minutes}`（快进3天=4320） |
+| POST | `/world/advance` | ★连续快进 `{minutes, speed?}`（三天=4320，speed默认60游戏分钟/现实秒），完成后恢复原速并补做维护；请求返回不表示已经到达 |
 | POST | `/world/goto` | 指派目的地 `{npc, map_id, room_id}`，也接受原有的 `{npc, area}`。当前地点随实际走动更新 |
 | POST | `/world/report` | 上报实际位置 `{npc, map_id, room_id}`，更新世界中的地点；兼容旧单图客户端的 `{npc, grid}` |
 | POST | `/chat` | 玩家↔NPC 对话 `{npc, message}`（M4 扩展基础） |
@@ -376,7 +380,7 @@ fastapi/uvicorn（接口）、openai（SDK）、pydantic（校验）、python-do
    run_conversation）；或运行时 `POST /conversation`
 4. **调遗忘速度**: config.py `MEMORY.half_life_minutes`（默认 300，越小忘越快）、
    `forget_threshold`（越大越容易忘）、`capacity`（越小淘汰越狠）
-5. **M3 调度器**: 新建 scheduler.py，循环: `world.co_located_pairs()` →
+5. **M3 调度器（已实现）**: 继续维护 scheduler.py，循环: `world.co_located_pairs()` →
    按"日程/目标/关系"挑一对 → 调 `service.run_conversation` → `advance_time`
 6. **玩家模式 M4**: 现有 `POST /chat` 是最小实现；扩展成玩家加入世界
    （persona 生成 + 关系初始化 + NPC 可主动找玩家 = 中断机制，届时用
@@ -397,11 +401,20 @@ fastapi/uvicorn（接口）、openai（SDK）、pydantic（校验）、python-do
 | 对话被拦截"冷却中" | 同一对 NPC 120 游戏分钟内不能重聊 → `advance_time` 或改 `WORLD.cooldown_minutes` |
 | pip 装包慢/失败 | 校园网代理问题 → `pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt` |
 | git push 走代理失败 | 全局代理已设 7897（Clash Verge）；`github.com` 可用，`git.tongji.edu.cn` 建议单独禁代理 |
-| 想重置世界 | 删 `data/memory.db` 或用 `GameService(fresh_db=True)`（api/run_demo 默认已如此） |
+| 想重置世界 | 先停止服务并备份，再显式清空数据库；HTTP默认保留数据，CLI演示的`fresh_db=True`会清库，不要与HTTP同时运行 |
 | Godot 打不开工程/弹升级提示 | 引擎版本与排错见 §7.5（"将修改为 Godot 4.7"弹窗点确认即可） |
 | Godot 运行报 SCRIPT ERROR | 看错误行的脚本名+行号；若是资源路径问题先删 `frontend/.godot/` 缓存重新导入 |
 | 前端看不到任何 NPC | 查 Output 面板是否打印 `[Main] 已生成 10 个 NPC`；没有则 `data/npc_roster.json` 路径/JSON 被改坏 |
 | 前端"已连接后端"但 NPC 不挪窝 | 后端日程没翻段：目的地按人格卡 `schedule` 时刻表**惰性**计算，时间不跨段目标不变（前端 WANDER 在房内闲逛是正常的）；可 `POST /world/advance` 快进触发翻段 |
 | room_id_at 等按数字键查字典查不到 | JSON 解析出的数字是 **float**，GDScript 字典里 `3.0` 和 `3` 是不同键——跨 JSON/代码的数字键必须显式 `int()`（M2.2 实际踩坑，详见 game_data.gd `room_id_at` 注释） |
+
+## 14. 本轮接力的实现边界与复测
+
+- 参数仍以 `backend/config.py` 为入口；模型调用继续只经 `llm.py`，没有改写模型、记忆检索或遗忘算法。
+- HTTP维持薄路由：连续快进和状态切换放在 `SocialService`，调度循环放在 `Scheduler`；保持现有组件依赖方向。
+- `busy` 只表示实际任务处理，气泡计时不参与角色占用；长台词采用原版分段与即时替换，完整内容仍可在日志查看。
+- `game_data.gd` 统一提供楼梯入口和目的地。试走中智信馆二楼西端楼梯可返回济事楼三楼；三楼西楼梯可选择上四楼或跨馆，东西楼梯原有功能保留。
+- 后端回归为 `python -X utf8 -B -m unittest discover -s tests -p test_social.py -v`。前端专项脚本为 `tests/check_social_ui.gd`、`tests/check_time_flow.gd`、`tests/check_trial_transitions.gd`；实际WebSocket验证为 `tests/run_websocket_smoke.py`。校园路线沿用§7.4，并可通过 `ROAM_TEST_SPEED=6` 验证定时快进倍率。
+- 本轮使用独立开发分支，提交明确列出的源码、测试和文档；密钥、运行数据库、日志、Godot缓存及个人工具不入库，不自动推送共享分支。
 
 

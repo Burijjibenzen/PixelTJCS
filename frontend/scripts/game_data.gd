@@ -64,18 +64,32 @@ func _ready() -> void:
 func _connect_floors() -> void:
 	for map_id: String in MAP_IDS:
 		for stair: Dictionary in floor_data[map_id].stairs.values():
-			var dest: String = stair.get("destination_map", "")
-			if not floor_data.has(dest):
-				continue
-			# 入口取对向楼梯记录的落地格，避免走进墙上的楼梯画面。
-			var reverse: Dictionary = floor_data[dest].stairs.get(stair.id, {})
-			if reverse.get("destination_map", "") == map_id:
-				_add_link(map_id, _cell(reverse.destination_cell), dest, _cell(stair.destination_cell))
-	# 跨馆时在两栋楼的西侧楼梯口转场，省略未绘制的室外路程。
-	var west_jishi := _cell(floor_data[FLOOR4].stairs.stair_west.destination_cell)
-	var west_zhixing := _cell(floor_data[ZHIXING].stairs.zx2_stair_w.cell)
-	_add_link(FLOOR3, west_jishi, ZHIXING, west_zhixing)
-	_add_link(ZHIXING, west_zhixing, FLOOR3, west_jishi)
+			for destination: Dictionary in stair_destinations(map_id, stair.id):
+				_add_link(map_id, stair_entry(map_id, stair.id), destination.map_id, destination.cell)
+
+
+func stair_entry(map_id: String, stair_id: String) -> Vector2i:
+	var stair: Dictionary = floor_data[map_id].stairs[stair_id]
+	var dest: String = stair.get("destination_map", "")
+	if floor_data.has(dest):
+		var reverse: Dictionary = floor_data[dest].stairs.get(stair_id, {})
+		if reverse.get("destination_map", "") == map_id:
+			return _cell(reverse.destination_cell)
+	return _cell(stair.cell)
+
+
+func stair_destinations(map_id: String, stair_id: String) -> Array:
+	# NPC 寻路与试走模式共用出口；三楼西楼梯同时保留上四楼和跨馆的选择。
+	var result: Array = []
+	var stair: Dictionary = floor_data[map_id].stairs.get(stair_id, {})
+	var dest: String = stair.get("destination_map", "")
+	if floor_data.has(dest) and stair.has("destination_cell"):
+		result.append({"map_id": dest, "cell": _cell(stair.destination_cell)})
+	if map_id == FLOOR3 and stair_id == "stair_west":
+		result.append({"map_id": ZHIXING, "cell": stair_entry(ZHIXING, "zx2_stair_w")})
+	elif map_id == ZHIXING and stair_id == "zx2_stair_w":
+		result.append({"map_id": FLOOR3, "cell": stair_entry(FLOOR3, "stair_west")})
+	return result
 
 func _add_link(map_id: String, start: Vector2i, dest: String, end: Vector2i) -> void:
 	if is_blocked(start, map_id) or is_blocked(end, dest):

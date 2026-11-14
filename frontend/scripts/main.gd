@@ -8,7 +8,6 @@ var npcs: Array[NPC] = []
 var floor_doors := {}
 var follow_idx := -1
 var current_map := Game.FLOOR3
-var demo_clock := 8.0 * 3600.0
 var _sched_timer := 2.0
 var _dbg_prev := false
 var _sched_ui_timer := 0.0
@@ -50,6 +49,11 @@ func _ready() -> void:
 	ApiClient.online_changed.connect(_on_online_changed)
 	$UI/BtnAdv1h.pressed.connect(func() -> void: ApiClient.advance_time(60))
 	$UI/BtnAdv4h.pressed.connect(func() -> void: ApiClient.advance_time(240))
+	for rate in ApiClient.SPEED_OPTIONS:
+		$UI/SpeedPicker.add_item("正常 ×1" if rate == ApiClient.BASE_SPEED else "快进 ×%.0f" % (rate / ApiClient.BASE_SPEED))
+	$UI/SpeedPicker.item_selected.connect(func(index): ApiClient.set_speed(ApiClient.SPEED_OPTIONS[index]))
+	ApiClient.speed_changed.connect(_sync_speed_picker)
+	_sync_speed_picker()
 	_on_online_changed(ApiClient.backend_online)
 
 func _physics_process(_delta: float) -> void:
@@ -57,13 +61,11 @@ func _physics_process(_delta: float) -> void:
 		floor_doors[map_id].update_for_npcs(npcs, map_id)
 
 func _process(delta: float) -> void:
-	if ApiClient.backend_online:
-		$UI/ClockLabel.text = ApiClient.backend_time + " · 后端驱动"
-	else:
-		demo_clock += delta * 60.0
-		var minute := int(demo_clock / 60.0) % 1440
-		$UI/ClockLabel.text = "%02d:%02d · 本地演示时钟" % [minute / 60, minute % 60]
-		_sched_timer -= delta
+	var mode := "后端驱动" if ApiClient.backend_online else "本地演示"
+	var rate := "已暂停" if ApiClient.simulation_paused else "×%.0f" % ApiClient.time_scale()
+	$UI/ClockLabel.text = ApiClient.backend_time + " · " + mode + " " + rate
+	if not ApiClient.backend_online:
+		_sched_timer -= delta * ApiClient.time_scale()
 		if _sched_timer <= 0.0:
 			_sched_timer = randf_range(4.0, 7.0)
 			_random_schedule()
@@ -171,8 +173,13 @@ func _random_schedule() -> void:
 		print("[日程] %s → %s" % [npc.npc_name, _location_name(map_id, room)])
 
 func _on_online_changed(online: bool) -> void:
-	$UI/BtnAdv1h.visible = online
-	$UI/BtnAdv4h.visible = online
+	$UI/BtnAdv1h.disabled = not online
+	$UI/BtnAdv4h.disabled = not online
 	if not online:
 		$UI/SchedulePanel.visible = false
 		_sched_timer = 2.0
+
+func _sync_speed_picker() -> void:
+	var index := ApiClient.SPEED_OPTIONS.find(ApiClient.simulation_speed)
+	if index >= 0:
+		$UI/SpeedPicker.select(index)

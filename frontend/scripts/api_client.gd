@@ -5,14 +5,24 @@ extends Node
 
 signal online_changed(online: bool)
 signal advance_done            # 快进请求成功(下一轮轮询自然刷新目标)
+signal speed_changed
+signal control_error(message: String)
 
 const BACKEND := "http://127.0.0.1:8000"
 const POLL_INTERVAL := 1.0   # 轮询周期(秒)
 const REQ_TIMEOUT := 1.5     # 单请求超时(秒)
 const FAIL_LIMIT := 3        # 连续失败多少次判定离线
+const BASE_SPEED := 10.0
+const SPEED_OPTIONS := [10.0, 20.0, 40.0, 60.0]  # 游戏分钟/现实秒；对应原速的1/2/4/6倍。
 
 var backend_online := false
-var backend_time := ""       # 后端游戏时间字符串("第1天 08:00"), 在线时给 main 显示
+var backend_time := "第1天 08:00:00"
+var display_minutes := 480.0
+var simulation_speed := BASE_SPEED
+var base_speed := BASE_SPEED
+var simulation_paused := false
+var _clock_initialized := false
+var _clock_correction := 0.0
 var last_world := {}         # 最近一次 /world 快照(日程面板数据源)
 
 var _npcs: Array = []        # main.gd 装配后注入的 NPC 引用
@@ -26,6 +36,7 @@ var _http_adv: HTTPRequest   # 快进专用
 var _pending_positions := {}  # 每名 NPC 只保留最新待发送位置
 var _sending_position := {}
 var _confirmed_positions := {}
+var _speed_pending := false
 
 
 func _ready() -> void:
@@ -49,6 +60,7 @@ func setup(npcs: Array) -> void:
 
 
 func _process(delta: float) -> void:
+	_advance_display_clock(delta)
 	_poll_timer -= delta
 	if _poll_timer <= 0.0:
 		_poll_timer = POLL_INTERVAL
@@ -94,8 +106,19 @@ func apply_stream_world(data: Dictionary) -> void:
 
 func _apply_world(data: Dictionary) -> void:
 	_fail_count = 0
-	backend_time = str(data.get("time", ""))
+	var social: Dictionary = data.get("social", {})
+	base_speed = float(social.get("base_speed", BASE_SPEED))
+	simulation_speed = float(social.get("speed", BASE_SPEED))
+	simulation_paused = bool(social.get("paused", false))
+	if data.has("minutes"):
+		if not _clock_initialized:
+			display_minutes = float(data.minutes)
+			_clock_initialized = true
+		else:
+			_clock_correction = float(data.minutes) - display_minutes
 	last_world = data
+	_refresh_clock_text()
+	speed_changed.emit()
 	if not backend_online:
 		backend_online = true
 		_confirmed_positions.clear()
@@ -118,6 +141,40 @@ func _apply_world(data: Dictionary) -> void:
 		if confirmed.has("map_id") and (confirmed.map_id != info.get("map_id") or confirmed.room_id != info.get("room_id")):
 			_confirmed_positions.erase(npc.npc_name)
 		report_arrival(npc)
+
+
+func time_scale() -> float:
+	return 0.0 if simulation_paused else simulation_speed / base_speed
+
+
+func _advance_display_clock(delta: float) -> void:
+	var advance := delta * simulation_speed if not simulation_paused else 0.0
+	# 后端快照之间连续计时，缓慢校准误差，不能把显示时钟向后跳。
+	var correction := clampf(_clock_correction, -advance * 0.25, advance * 0.25) if backend_online else 0.0
+	display_minutes += advance + correction
+	_clock_correction -= correction
+	_refresh_clock_text()
+
+
+func _refresh_clock_text() -> void:
+	var seconds := int(display_minutes * 60.0)
+	backend_time = "第%d天 %02d:%02d:%02d" % [seconds / 86400 + 1, seconds / 3600 % 24, seconds / 60 % 60, seconds % 60]
+
+
+func set_speed(multiplier: float) -> void:
+	if not backend_online:
+		simulation_speed = multiplier
+		simulation_paused = false
+		speed_changed.emit()
+		return
+	if _speed_pending:
+		return
+	_speed_pending = true
+	var error := _http_adv.request(BACKEND + "/world/speed", ["Content-Type: application/json"], HTTPClient.METHOD_POST,
+		JSON.stringify({"speed": multiplier, "paused": false}))
+	if error != OK:
+		_speed_pending = false
+		control_error.emit("倍速切换失败，请稍后重试")
 
 
 func report_arrival(npc) -> void:
@@ -162,19 +219,28 @@ func _on_report_done(result: int, code: int, _headers: PackedStringArray,
 	_pump_report()
 
 
-# ---- 快进: POST /world/advance (游戏内时间控制按钮用) ----
+# 指定时长的连续快进，保留给演示控制；界面日常操作使用 set_speed。
 func advance_time(minutes: int) -> void:
-	if not backend_online:
+	if not backend_online or _speed_pending:
 		return
+	_speed_pending = true
 	var body := JSON.stringify({"minutes": minutes})
 	print("[ApiClient] 快进 %d 游戏分钟..." % minutes)
-	_http_adv.request(BACKEND + "/world/advance",
-		["Content-Type: application/json"], HTTPClient.METHOD_POST, body)
+	if _http_adv.request(BACKEND + "/world/advance",
+		["Content-Type: application/json"], HTTPClient.METHOD_POST, body) != OK:
+		_speed_pending = false
+		control_error.emit("快进请求未能发送")
 
 
 func _on_advance_done(result: int, code: int, _headers: PackedStringArray,
-		_body: PackedByteArray) -> void:
+		body: PackedByteArray) -> void:
+	_speed_pending = false
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
-		print("[ApiClient] 快进失败")
+		control_error.emit("倍速切换失败，请检查后端连接")
 		return
-	advance_done.emit()  # 下一轮轮询(≤1s)自动拿到翻段后的新目标
+	var data = JSON.parse_string(body.get_string_from_utf8())
+	if data is Dictionary:
+		simulation_speed = float(data.get("speed", simulation_speed))
+		simulation_paused = bool(data.get("paused", simulation_paused))
+		speed_changed.emit()
+	advance_done.emit()

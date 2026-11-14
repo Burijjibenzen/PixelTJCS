@@ -19,6 +19,7 @@ from backend.logger import get_logger
 # M3: HTTP 使用独立社交服务；原 GameService 保留给命令行演示。
 from backend.social import SocialService as GameService, install
 from backend.world import ROOMS
+from backend.config import SOCIAL
 
 log = get_logger(__name__)
 
@@ -53,7 +54,8 @@ class ConversationReq(BaseModel):
 
 
 class AdvanceReq(BaseModel):
-    minutes: float = Field(gt=0, le=43200)  # M3: 禁止倒退时间破坏冷却/遗忘。 推进多少游戏分钟（演示遗忘: 一次推 3 天 = 4320）
+    minutes: float = Field(gt=0, le=43200, allow_inf_nan=False)
+    speed: float = Field(default=SOCIAL.fast_forward_speed, gt=0, le=60, allow_inf_nan=False)
 
 
 class GotoReq(BaseModel):
@@ -138,8 +140,8 @@ def run_conversation(req: ConversationReq):
 
 @app.post("/world/advance")
 def advance_time(req: AdvanceReq):
-    """推进游戏时间，触发遗忘检查与反思（时间加速演示入口）。"""
-    return get_service().advance_time(req.minutes)
+    """连续加速指定游戏分钟数；到达目标后恢复原倍速，不跳变时钟。"""
+    return get_service().fast_forward(req.minutes, req.speed)
 
 
 @app.post("/world/goto")

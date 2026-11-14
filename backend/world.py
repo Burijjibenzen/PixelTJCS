@@ -286,4 +286,4 @@ class World:
                 "target_map_id": target["map_id"], "target_room_id": target["room_id"],
                 "grid": grid_of(area_id), "target_grid": grid_of(target_id),
             }
-        return {"time": self.clock.fmt(), "npcs": npcs, "events": self.events[-20:]}
+        return {"time": self.clock.fmt(), "minutes": self.clock.now, "npcs": npcs, "events": self.events[-20:]}

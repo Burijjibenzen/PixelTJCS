@@ -1,6 +1,6 @@
 extends CanvasLayer
 ## M3 独立观察界面：WebSocket 事件流、分组并发气泡、记忆/关系面板。
-# M3: 每段最多十秒；新台词立即替换，长文本按标点和长度拆段。
+# 原版节奏：新台词立即替换，每段最多显示十个现实秒；不限制人物行动。
 const BUBBLE_SECONDS := 10.0
 const SEGMENT_CHARS := 60
 var actors: Array = []
@@ -36,7 +36,7 @@ var paused := false
 var fetching := "memory"
 var panel_name := ""
 var bubble_labels := {}
-# M3: 每场对话单独计时，允许不同角色组同时播放。
+# 每场对话独立显示，显示计时不参与人物行为或角色占用。
 var playbacks: Array = []
 # M3 修复：保存正在生成的最新一句，重连后恢复，完成事件不重复播整场。
 var live_versions := {}
@@ -45,6 +45,7 @@ var logged_lines := {}
 var meeting_status: Label
 var notice := ""
 var notice_until := 0.0
+var speed_picker: OptionButton
 
 func setup(npcs: Array) -> void:
 	actors = npcs
@@ -94,16 +95,26 @@ func _ready() -> void:
 	var controls := HBoxContainer.new()
 	box.add_child(controls)
 	var pause := Button.new()
-	pause.text = "暂停 / 继续调度"
+	pause.text = "暂停 / 继续世界"
 	controls.add_child(pause)
 	pause.pressed.connect(func():
 		var desired := not bool(ApiClient.last_world.get("social", {}).get("paused", false))
-		_send_control("/social/control", {"paused": desired, "speed": ApiClient.last_world.get("social", {}).get("speed", 10)})
+		_send_control("/social/control", {"paused": desired})
 	)
+	speed_picker = OptionButton.new()
+	for rate in ApiClient.SPEED_OPTIONS:
+		speed_picker.add_item("正常 ×1" if rate == ApiClient.BASE_SPEED else "快进 ×%.0f" % (rate / ApiClient.BASE_SPEED))
+	speed_picker.tooltip_text = "原速：现实1秒 = 游戏10分钟；快进同步加速移动，对话恢复原版节奏"
+	controls.add_child(speed_picker)
+	speed_picker.item_selected.connect(func(index): ApiClient.set_speed(ApiClient.SPEED_OPTIONS[index]))
 	var advance := Button.new()
 	advance.text = "快进3天"
+	advance.tooltip_text = "连续快进3个游戏天，抵达目标后恢复原倍率"
 	controls.add_child(advance)
 	advance.pressed.connect(func(): ApiClient.advance_time(4320))
+	ApiClient.speed_changed.connect(_sync_speed_picker)
+	ApiClient.control_error.connect(_notice)
+	_sync_speed_picker()
 	picker = OptionButton.new()
 	for npc in actors:
 		picker.add_item(npc.npc_name)
@@ -189,10 +200,7 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_poll_socket(delta)
-	for playback in playbacks.duplicate():
-		playback.remaining -= delta
-		if playback.remaining <= 0:
-			_advance_turn(playback)
+	_tick_playbacks(delta)
 	var meeting_lines: PackedStringArray = []
 	var selected := picker.get_item_text(picker.selected)
 	for m in ApiClient.last_world.get("social", {}).get("meetings", []):
@@ -201,7 +209,11 @@ func _process(delta: float) -> void:
 	meeting_status.text = "\n".join(meeting_lines.slice(maxi(0, meeting_lines.size() - 3)))
 	model_status.text = "模型已配置" if ApiClient.last_world.get("social", {}).get("model_configured", false) else "预设台词模式：未配置模型密钥"
 	panel_timer -= delta
-	status.text = notice if Time.get_ticks_msec() / 1000.0 < notice_until else ("调度已暂停 · " if ApiClient.last_world.get("social", {}).get("paused", false) else "自主社交 · ") + ApiClient.backend_time
+	status.text = notice if Time.get_ticks_msec() / 1000.0 < notice_until else ("世界已暂停 · " if ApiClient.simulation_paused else "自主社交 · ") + ApiClient.backend_time
+	var target = ApiClient.last_world.get("social", {}).get("target_minutes")
+	if target != null and Time.get_ticks_msec() / 1000.0 >= notice_until:
+		var remaining := maxf(0.0, float(target) - float(ApiClient.last_world.get("minutes", 0.0)))
+		status.text += "\n定时快进中：剩余 %.0f 游戏分钟，到达后恢复原速" % remaining
 	if not stream_online:
 		status.text = "对话事件流重连中 · " + ApiClient.backend_time
 	if not ApiClient.backend_online:
@@ -222,6 +234,21 @@ func _process(delta: float) -> void:
 				history_label.text = "记忆时间线：当前"
 		if panel_http.request(ApiClient.BACKEND + url) != OK:
 			panel_pending = false
+
+
+func _sync_speed_picker() -> void:
+	var index := ApiClient.SPEED_OPTIONS.find(ApiClient.simulation_speed)
+	if index >= 0:
+		speed_picker.select(index)
+
+
+func _tick_playbacks(delta: float) -> void:
+	for playback in playbacks.duplicate():
+		playback.remaining -= delta
+		while playback in playbacks and playback.remaining <= 0:
+			var overdue: float = -playback.remaining
+			_advance_turn(playback)
+			playback.remaining -= overdue
 
 # M3: WebSocketPeer.poll 是收取持久连接的数据，不是 HTTP 定时查询。
 func _poll_socket(delta: float) -> void:
@@ -267,8 +294,6 @@ func _accept_stream(message: Dictionary) -> void:
 		cursor = mini(cursor, int(message.id))
 		playbacks.clear()
 		live_versions.clear()
-		for npc in actors:
-			npc.social_playing = false
 		for bubble in bubble_labels.values():
 			bubble.hide()
 		ApiClient.apply_stream_world(message.world)
@@ -292,13 +317,15 @@ func _accept_stream(message: Dictionary) -> void:
 		"memory_changed", "relation_changed":
 			panel_timer = 0
 			_fetch_history()
-		"conversation_released", "error":
-			for playback in playbacks:
+		"error":
+			if message.get("replay", false):
+				return  # 旧执行错误不能取消当前恢复的气泡。
+			for playback in playbacks.duplicate():
 				if playback.event.get("conversation_id", "") == message.get("conversation_id", ""):
 					playback.index = playback.event.result.transcript.size()
-					playback.remaining = 0
-			if message.kind == "error":
-				_notice(str(message.message))
+					_advance_turn(playback)
+			_notice(str(message.message))
+		# 角色任务完成与气泡显示分别处理，不因气泡而延迟后续行动。
 
 # M3: 事件补发只补日志；地图仍按服务端活跃快照和实时台词显示，避免重演旧聊天。
 func _append_dialogue(line: Dictionary) -> void:
@@ -315,17 +342,17 @@ func _show_line(line: Dictionary) -> void:
 	if int(live_versions.get(key, -1)) >= int(line.sequence):
 		return
 	live_versions[key] = int(line.sequence)
-	# 新句替换当前段；也清理同一角色上一场残余气泡，避免两场互相释放移动锁。
+	var display_lines := _display_lines(line)
+	# 恢复原版即时替换，不让文字展示反过来影响人物行为。
 	for old in playbacks.duplicate():
 		if old.event.participants.any(func(n): return n in line.participants):
 			for npc in actors:
 				if npc.npc_name in old.event.participants:
-					npc.social_playing = false
 					if bubble_labels.has(npc.npc_name):
 						bubble_labels[npc.npc_name].hide()
 			playbacks.erase(old)
 	_start_playback({"conversation_id": key, "participants": line.participants,
-		"result": {"transcript": [{"speaker": line.speaker, "text": line.text}]}})
+		"result": {"transcript": display_lines}}, float(line.get("playback_elapsed", 0.0)))
 
 func _fetch_history() -> void:
 	if history_pending or picker.item_count == 0:
@@ -392,20 +419,29 @@ func _segments(text: String) -> Array[String]:
 		segments.append(part.strip_edges())
 	return segments
 
-func _start_playback(event: Dictionary) -> void:
-	# M3: 复制事件再拆段；不得改写服务端序号和原始台词。
-	var display := event.duplicate(true)
+func _display_lines(line: Dictionary) -> Array:
 	var lines: Array = []
-	for line in event.result.transcript:
-		for segment in _segments(str(line.text)):
-			lines.append({"speaker": line.speaker, "text": segment})
-	display.result.transcript = lines
+	var segments: Array = line.get("segments", []).duplicate(true)
+	if segments.is_empty():
+		for text in _segments(str(line.text)):
+			segments.append({"text": text, "seconds": BUBBLE_SECONDS})
+	for segment in segments:
+		lines.append({"speaker": line.speaker, "text": segment.text, "seconds": float(segment.seconds)})
+	return lines
+
+
+func _start_playback(event: Dictionary, elapsed: float = 0.0) -> void:
+	var display := event.duplicate(true)
 	var playback := {"event": display, "index": 0, "remaining": 0.0}
 	playbacks.append(playback)
-	for npc in actors:
-		if npc.npc_name in event.participants:
-			npc.social_playing = true
 	_advance_turn(playback)
+	# 重连时从当前段恢复，并保留该句后续段落及尚未阅读的台词。
+	while playback in playbacks and elapsed > 0:
+		if elapsed < playback.remaining:
+			playback.remaining -= elapsed
+			break
+		elapsed -= playback.remaining
+		_advance_turn(playback)
 
 # M3: 气泡底边固定在姓名/头部上方，内容变高时向上伸展，不遮挡脸。
 func _place_bubble(npc: Node2D, bubble: Control) -> void:
@@ -423,15 +459,12 @@ func _advance_turn(playback: Dictionary) -> void:
 		if bubble_labels.has(name):
 			bubble_labels[name].hide()
 	if playback.index >= event.result.transcript.size():
-		for npc in actors:
-			if npc.npc_name in event.participants:
-				npc.social_playing = false
 		playbacks.erase(playback)
 		panel_timer = 0
 		return
 	var line: Dictionary = event.result.transcript[playback.index]
 	playback.index += 1
-	playback.remaining = BUBBLE_SECONDS
+	playback.remaining = float(line.get("seconds", BUBBLE_SECONDS))
 	for npc in actors:
 		if npc.npc_name != line.speaker:
 			continue
@@ -530,6 +563,6 @@ func _control_done(result: int, code: int, _headers: PackedStringArray, body: Pa
 		return
 	if data is Dictionary and data.has("paused"):
 		paused = bool(data.paused)
-		_notice("自动调度已暂停" if paused else "自动调度已继续")
+		_notice("世界已暂停" if paused else "世界已继续")
 	else:
 		_notice(str(data.get("detail", "操作成功")) if data is Dictionary else "操作成功")

@@ -79,14 +79,16 @@ WORLD = WorldConfig()
 class SocialConfig:
     """M3: 文档中的世界循环/关系加权/事件成本参数集中于配置层。"""
     tick_seconds: float = 0.5
-    speed: float = 10.0
+    speed: float = 10.0  # 恢复原版后端：1 现实秒 = 10 游戏分钟。
+    fast_forward_speed: float = 60.0  # 定时快进：3 游戏天连续运行约 72 现实秒。
     decision_interval: float = 15.0
     base_chat_probability: float = 0.20
     max_conversations: int = 2
     presence_seconds: float = 15.0
     meeting_timeout: float = 300.0
     maintenance_minutes: float = 30.0
-    bubble_seconds: float = 10.0
+    bubble_seconds: float = 10.0  # 恢复原版：新台词立即替换，每段最多显示 10 现实秒。
+    bubble_segment_chars: int = 60
     visit_relation: float = 80.0
     gossip_max_hops: int = 3
     websocket_queue: int = 256

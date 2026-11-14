@@ -7,9 +7,8 @@ signal floor_changed(npc)
 enum S { IDLE, WANDER, WALK }
 const SPEED := 55.0
 
-# M3: 后端生成对话和本地气泡播放期间暂停移动，保留原路线供结束后继续。
+# 后端实际处理对话时暂停移动；气泡显示不影响人物行为。
 var social_busy := false
-var social_playing := false
 
 var npc_id := ""
 var npc_name := "?"
@@ -75,17 +74,19 @@ func _start_section() -> void:
 	state = S.WALK
 
 func _physics_process(delta: float) -> void:
+	var rate := ApiClient.time_scale()
+	sprite.speed_scale = rate
 	# M3: 不调用 _idle()，避免清掉正在行走的路线。
-	if social_busy or social_playing:
+	if social_busy or rate <= 0.0:
 		velocity = Vector2.ZERO
 		_play("idle")
 		return
 	if state == S.IDLE:
-		_wander_timer -= delta
+		_wander_timer -= delta * rate
 		if _wander_timer <= 0.0:
 			_begin_wander()
 	else:
-		_step_move(delta)
+		_step_move(delta, rate)
 
 func _begin_wander() -> void:
 	_wander_timer = randf_range(1.5, 4.0)
@@ -103,27 +104,31 @@ func _begin_wander() -> void:
 	path_i = 0
 	state = S.WANDER
 
-func _step_move(delta: float) -> void:
-	var target := path[path_i]
-	var direction := target - global_position
-	if direction.length_squared() < 0.01:
-		path_i += 1
-		if path_i == path.size():
-			_finish_section()
-		return
-	# 走到格心才转向，避免脚部在单格门洞处蹭到内侧墙角。
-	velocity = direction.limit_length(SPEED * delta) / delta
-	var previous := global_position
-	move_and_slide()
-	_play(_walk_anim())
-	if previous.distance_squared_to(global_position) < 0.0001:
-		_blocked_time += delta
-		if _blocked_time >= 1.0:
-			# 物理墙阻断时取消行程，让下一次调度重试。不会把卡点上报成终点。
-			_sections.clear()
-			goal_room = ""
-			_idle()
-	else:
+func _step_move(delta: float, rate: float = 1.0) -> void:
+	var distance_left := SPEED * delta * rate
+	# 倍速时允许一帧通过多个格心，仍逐格做物理移动，避免穿墙或倍率失真。
+	while not path.is_empty():
+		var direction := path[path_i] - global_position
+		if direction.length_squared() < 0.01:
+			path_i += 1
+			if path_i == path.size():
+				_finish_section()
+			continue
+		if distance_left <= 0.001:
+			break
+		var step := minf(direction.length(), distance_left)
+		velocity = direction.normalized() * step / delta
+		var previous := global_position
+		move_and_slide()
+		_play(_walk_anim())
+		distance_left -= step
+		if previous.distance_squared_to(global_position) < 0.0001:
+			_blocked_time += delta
+			if _blocked_time >= 1.0:
+				_sections.clear()
+				goal_room = ""
+				_idle()
+			break
 		_blocked_time = 0.0
 
 func _finish_section() -> void:

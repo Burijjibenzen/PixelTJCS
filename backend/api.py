@@ -20,6 +20,8 @@ from backend.logger import get_logger
 from backend.social import SocialService as GameService, install
 from backend.world import ROOMS
 from backend.config import SOCIAL
+from backend.config import PLAYER
+from backend.player_mode import PlayerError
 
 log = get_logger(__name__)
 
@@ -79,7 +81,23 @@ class ReportReq(BaseModel):
 
 class ChatReq(BaseModel):
     npc: str
-    message: str
+    message: str = Field(min_length=1, max_length=PLAYER.message_max_chars)
+    session_id: Optional[str] = Field(default=None, max_length=100)
+    request_id: Optional[str] = Field(default=None, max_length=100)
+
+
+class PlayerJoinReq(BaseModel):
+    name: str = Field(default='玩家', min_length=1, max_length=PLAYER.name_max_chars)
+
+
+class PlayerSessionReq(BaseModel):
+    session_id: str = Field(min_length=1, max_length=100)
+
+
+class PlayerChatReq(PlayerSessionReq):
+    npc: str
+    message: str = Field(min_length=1, max_length=PLAYER.message_max_chars)
+    request_id: str = Field(min_length=1, max_length=100)
 
 
 class PublicLocation(BaseModel):
@@ -220,11 +238,48 @@ def report_arrival(req: ReportReq):
 
 @app.post("/chat")
 def chat_with_npc(req: ChatReq):
-    """玩家 ↔ NPC 单轮对话（玩家模式最小实现）。"""
-    result = get_service().chat_with_npc(req.npc, req.message)
-    if result is None:
-        raise HTTPException(404, f"角色不存在: {req.npc}")
-    return result
+    """兼容单轮同步入口；同样要求玩家已加入。Godot使用/player/chat异步入口。"""
+    return player_action(lambda: get_service().chat_with_npc(req.npc, req.message, req.session_id, req.request_id))
+
+
+def player_action(action):
+    try:return action()
+    except PlayerError as error:raise HTTPException(error.status, str(error))
+
+
+@app.get('/player')
+def player_state():
+    return get_service().player.state()
+
+
+@app.post('/player/join')
+def player_join(req: PlayerJoinReq):
+    return player_action(lambda: get_service().player.join(req.name))
+
+
+@app.post('/player/leave')
+def player_leave(req: PlayerSessionReq):
+    return player_action(lambda: get_service().player.leave(req.session_id))
+
+
+@app.post('/player/chat', status_code=202)
+def player_chat(req: PlayerChatReq):
+    return player_action(lambda: get_service().player.submit(req.session_id, req.npc, req.message, req.request_id))
+
+
+@app.get('/player/turns/{turn_id}')
+def player_turn(turn_id: str, session_id: str):
+    return player_action(lambda: get_service().player.turn(session_id, turn_id))
+
+
+@app.get('/player/history')
+def player_history(session_id: str, npc: Optional[str] = None):
+    return player_action(lambda: dict(turns=get_service().player.history(session_id, npc)))
+
+
+@app.get('/player/memory')
+def player_memory(session_id: str):
+    return player_action(lambda: get_service().player.memories(session_id))
 
 # M3: 注册社交事件/控制接口并随应用启动和关闭调度器。
 install(app, get_service)

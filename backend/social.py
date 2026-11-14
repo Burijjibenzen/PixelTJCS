@@ -21,8 +21,7 @@ from backend.noticeboards import NoticeBoards, BOARDS
 class SocialService(GameService):
     def __init__(self,fresh_db=False):
         super().__init__(fresh_db=fresh_db)
-        self.lock=threading.RLock()
-        self.busy=set();self.reflecting=set();self.seen={}
+        self.reflecting=set();self.seen={}
         self.reading=set()
         self.reading_waiting=set()
         self.notice_approaching=set()
@@ -90,6 +89,7 @@ class SocialService(GameService):
     def stop(self):
         if self._closed:return
         self._closed=True
+        self.player.stop()
         self.scheduler.stop()
         self.boards.stop()
         self.planner.stop()
@@ -359,6 +359,9 @@ class SocialService(GameService):
             for name,npc in result['npcs'].items():
                 npc['busy']=name in self.busy or name in self.reflecting or name in self.reading or name in self.reading_waiting
                 npc['activity']=self.planner.describe(name)
+                if self.player.pending_npc==name:
+                    npc['activity'].update(title='与玩家交谈',source='player',state='active',state_label='交谈中',
+                        reason='玩家主动发起交流',detail='正在回复，完成后继续原来的安排')
                 if name in self.reading_waiting:
                     npc['activity'].update(title='等待读公告',source='notice',state='waiting',state_label='等待阅读',
                         reason='已安排在公告栏前阅读',detail=self.boards.wait_reason(name))

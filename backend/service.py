@@ -5,6 +5,7 @@ api.py（HTTP 接口）和 scripts/run_demo.py（命令行演示）共用本类�
 """
 
 import os
+import threading
 from typing import Dict, Optional, Tuple
 
 from backend.config import MEMORY
@@ -14,6 +15,7 @@ from backend.logger import get_logger
 from backend.memory import MemoryStore
 from backend.npc import NPCAgent
 from backend.persona import PersonaCard, load_all_personas
+from backend.player_mode import PlayerMode
 from backend.relations import RelationGraph
 from backend.world import AREAS, ROOMS, World
 
@@ -24,6 +26,8 @@ class GameService:
     """持有并初始化全部子系统；对外提供高层动作（对话/时间推进/查询）。"""
 
     def __init__(self, fresh_db: bool = True):
+        self.lock = threading.RLock()
+        self.busy = set()
         # 1) 清空旧数据库（每次冷启动从零演示；改为 False 可续跑）
         if fresh_db and os.path.exists(MEMORY.db_path):
             os.remove(MEMORY.db_path)
@@ -51,6 +55,7 @@ class GameService:
         self.engine = ConversationEngine(
             self.world, self.llm, self.memory, self.npcs, self.relations
         )
+        self.player = PlayerMode(self)
         log.info("🌍 GameService 就绪（%d 个角色）", len(self.npcs))
 
     # ------------------------------------------------------------------
@@ -101,18 +106,9 @@ class GameService:
         """前端到达上报（M2.2）：只更新位置+日志，不写记忆（见 world.report_arrival）。"""
         return self.world.report_arrival(npc_name, grid_id, map_id, room_id)
 
-    def chat_with_npc(self, npc_name: str, message: str) -> Optional[dict]:
-        """玩家 ↔ NPC 单轮对话（玩家模式的最小实现，M4 扩展）。"""
-        npc = self.npcs.get(npc_name)
-        if not npc:
-            return None
-        history = [{"speaker": "玩家", "text": message}]
-        reply = npc.speak(history, f"玩家主动找你说话: {message}")
-        # 玩家说的话也值得被 NPC 记住
-        mem = npc.save_dialogue_memory(
-            history, "玩家", self.world.clock.now, self.world.area_of(npc_name) or "j3_lab"
-        )
-        return {"reply": reply, "memory": mem.to_dict() if mem else None}
+    def chat_with_npc(self, npc_name: str, message: str, session_id=None, request_id=None) -> dict:
+        """玩家必须先加入；双方台词、记忆和关系由同一个玩家服务管理。"""
+        return self.player.chat(npc_name, message, session_id, request_id)
 
     # ------------------------------------------------------------------
     # 查询（供 API / 前端）

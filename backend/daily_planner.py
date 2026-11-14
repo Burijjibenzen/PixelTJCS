@@ -16,6 +16,19 @@ TERMINAL = {'completed', 'cancelled', 'timed_out'}
 STATE_TEXT = {'scheduled':'尚未开始','waiting':'等待','travelling':'正在前往','active':'已到达／活动中',
               'completed':'已完成','cancelled':'已取消','timed_out':'已超时'}
 
+# 历史活动会保存在数据库中；展示时也转换旧文案，不改动活动状态或计时。
+DISPLAY_COPY = {
+    '沿用人格卡基础作息':'基础作息',
+    '沿用人格卡中的基础生活习惯':'基础作息',
+    '保留目的地，等待实际到达上报':'正在前往目的地',
+    '等待前端位置上报':'行程暂缓，等待恢复连接',
+    '已实际到达，开始停留':'已到达，正在进行活动',
+    '等待日程调度':'等待出发',
+    '对话或反思处理中，保留行程':'正在交谈或整理思绪，稍后继续行程',
+    '等待客户端位置上报':'等待恢复连接后继续会面',
+    'LangGraph 对话中':'正在交谈',
+}
+
 
 class DynamicSchedule:
     def __init__(self, service):
@@ -100,7 +113,9 @@ class DynamicSchedule:
         return [m for m in self.s.active_meetings() if not any(self.manual(n) for n in (m['a'],m['b']))]
 
     def public(self, item):
-        return {k:item[k] for k in ('id','kind','title','area','reason','source','priority','starts_at','duration','state','arrived_at','detail')}
+        result={k:item[k] for k in ('id','kind','title','area','reason','source','priority','starts_at','duration','state','arrived_at','detail')}
+        for key in ('reason','detail'):result[key]=DISPLAY_COPY.get(result[key],result[key])
+        return result
 
     def describe(self, name):
         item=self.current_item(name) if ACTIVITY.enabled else None
@@ -108,15 +123,15 @@ class DynamicSchedule:
             result=self.public(item)
         else:
             result=dict(id='',kind='baseline',title='基础作息',area=self.s.world.target_area(name),
-                        reason='沿用人格卡中的基础生活习惯',source='baseline',state='waiting',detail='等待日程调度')
+                        reason='基础作息',source='baseline',state='waiting',detail='等待出发')
         if name in self.s.busy or name in self.s.reflecting:
-            result=dict(result,state='waiting',detail='对话或反思处理中，保留行程')
+            result=dict(result,state='waiting',detail='正在交谈或整理思绪，稍后继续行程')
         for meeting in self.eligible_meetings():
             if name in (meeting['a'],meeting['b']):
                 other=meeting['b'] if name==meeting['a'] else meeting['a']
                 result=dict(result,kind='meeting',title=f'与{other}会面',source='meeting',area=meeting['area'] or result['area'],
                             state='travelling' if meeting['state']=='moving' else 'active' if meeting['state']=='talking' else 'waiting',
-                            reason='已有会面请求优先处理',detail=meeting['detail'])
+                            reason='已有会面请求优先处理',detail=DISPLAY_COPY.get(meeting['detail'],meeting['detail']))
                 break
         result['state_label']=STATE_TEXT[result['state']]
         return result
@@ -295,10 +310,10 @@ class DynamicSchedule:
         if activity_id is not None and activity_id!=item['id']:return
         if AREAS[self.s.world.area_of(name)]['id']==item['area'] and item['phase']=='travelling':
             item.update(phase='active',arrived_at=self.s.world.clock.now,stay_elapsed=0.0,dwell_minutes=0.0)
-            self._state(item,'active','已实际到达，开始停留')
+            self._state(item,'active','已到达，正在进行活动')
 
     def _blocked(self, name, item):
-        if name in self.s.busy or name in self.s.reflecting:return '对话或反思处理中，保留行程'
+        if name in self.s.busy or name in self.s.reflecting:return '正在交谈或整理思绪，稍后继续行程'
         if not self.s.available(name,name):return '等待角色空闲'
         if item['source']!='manual' and any(name in (m['a'],m['b']) for m in self.eligible_meetings()):return '先处理已有会面，之后恢复活动'
         return ''
@@ -316,7 +331,7 @@ class DynamicSchedule:
             self._state(item,'waiting','已申请会面，等待双方空闲和实际抵达')
             return True
         self.s.world.activity_targets[name]=item['area']
-        self._state(item,'travelling','保留目的地，等待实际到达上报')
+        self._state(item,'travelling','正在前往目的地')
         return True
 
     def _reserve_meeting(self, item):
@@ -356,7 +371,7 @@ class DynamicSchedule:
                 chosen=candidates[0] if candidates else None
                 if chosen is None:
                     area=self.s.world.schedule_area(self.s.cards[name],self.s.world.clock.now)
-                    chosen=self._make(name,'baseline',area,self.s.world.clock.now,'baseline','沿用人格卡基础作息',priority=0)
+                    chosen=self._make(name,'baseline',area,self.s.world.clock.now,'baseline','基础作息',priority=0)
                 blocked=self._blocked(name,chosen)
                 if blocked:
                     # 保持scheduled，不为尚未开始的活动锁定另一条目的地。
@@ -381,7 +396,7 @@ class DynamicSchedule:
             blocked=self._blocked(name,item)
             online=now-self.s.seen.get(name,-1e9)<SOCIAL.presence_seconds
             if blocked or not online:
-                self._state(item,'waiting',blocked or '等待前端位置上报')
+                self._state(item,'waiting',blocked or '行程暂缓，等待恢复连接')
                 continue
             self.s.world.activity_targets[name]=item['area']
             if item['phase']=='active' and AREAS[self.s.world.area_of(name)]['id']!=item['area']:

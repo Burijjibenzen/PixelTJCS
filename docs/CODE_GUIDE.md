@@ -7,7 +7,7 @@
 
 > 2026-11-14 接力更新：后端保留原版现实1秒=游戏10分钟；1小时/4小时/3天快进连续运行，完成后恢复原速；对话恢复即时替换，气泡不限制人物行动；试走跨馆出口与NPC共用。细节及复测见 [TIME_AND_DIALOGUE.md](TIME_AND_DIALOGUE.md)，M3实现见 [M3.md](M3.md)。
 
-> 动态日程接力：固定作息之上增加身份/性格、本人记忆、好友和已知事件驱动的活动；行程锁定直到实际到达，再开始停留。Godot日程面板和角色资料页显示活动状态与原因。实现、参数、API和验收方法见 [DYNAMIC_SCHEDULES.md](DYNAMIC_SCHEDULES.md)。
+> 动态日程接力：固定作息之上增加身份/性格、本人记忆、好友和已知事件驱动的活动；行程锁定直到实际到达，再开始停留。活动信息统一在“社交观察 → 角色资料”显示，移除重复的固定日程窗口；明确标注当前活动、活动状态、安排依据、行程说明和目的地。实现、参数、API和验收方法见 [DYNAMIC_SCHEDULES.md](DYNAMIC_SCHEDULES.md)。
 
 ## 1. 项目一句话
 
@@ -211,7 +211,7 @@ NPC 收到目标后，先走到可达的楼梯落脚点，在另一层的对应�
 | --- | --- |
 | `frontend/scripts/game_data.gd` | 读取每层的网格、房间和楼梯，计算各段路线。 |
 | `frontend/scripts/npc.gd` | 执行房内闲逛和定点行程。按照目标楼层、房间走完路线后发出到达信号。 |
-| `frontend/scripts/main.gd`、`camera.gd`、`debug_draw.gd` | 管理楼层观察、镜头跟随、调试视图和日程面板。 |
+| `frontend/scripts/main.gd`、`camera.gd`、`debug_draw.gd` | 管理楼层观察、镜头跟随、调试视图和界面装配；活动信息在角色资料中查看。 |
 | `frontend/scripts/api_client.gd` | 读取后端日程目标并上报角色实际位置。连接中断后恢复本地演示。 |
 | `frontend/data/npc_roster.json` | 配置现有十名角色的贴图、出生位置及离线演示目的地。 |
 | `frontend/assets/map/<楼层>/manifest.json` | 查看该层的房间编号、名称和楼梯。NPC 目标同时使用楼层编号和房间编号。 |

@@ -261,10 +261,16 @@ class DynamicScheduleTests(unittest.TestCase):
 
     def test_persistence_preserves_current_target_and_daily_model_attempt(self):
         self.event('去图书分馆查资料');self.plan_tick();task=self.item()
+        # 已保存的旧文案也应自然显示，不要求用户清空运行数据库。
+        task['reason']='沿用人格卡基础作息'
+        task['detail']='保留目的地，等待实际到达上报'
         self.s.planner.model_attempted.add((self.a,0))
         with self.s.database() as db:db.execute("UPDATE npc_plan_days SET model_status='invalid' WHERE npc=? AND day=0",(self.a,))
         self.s.planner.stop()
         self.s.planner=DynamicSchedule(self.s)
+        restored=self.s.planner.describe(self.a)
+        self.assertEqual('基础作息',restored['reason'])
+        self.assertEqual('正在前往目的地',restored['detail'])
         self.plan_tick()
         self.assertEqual(task['id'],self.item()['id'])
         self.assertEqual(task['area'],self.s.world.target_area(self.a))

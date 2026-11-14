@@ -10,7 +10,6 @@ var follow_idx := -1
 var current_map := Game.FLOOR3
 var _sched_timer := 2.0
 var _dbg_prev := false
-var _sched_ui_timer := 0.0
 
 @onready var camera := $Cam
 @onready var floor_picker: OptionButton = $UI/FloorPicker
@@ -74,10 +73,6 @@ func _process(delta: float) -> void:
 	if debug_key and not _dbg_prev:
 		$DebugDraw.set_enabled(not $DebugDraw.enabled)
 	_dbg_prev = debug_key
-	_sched_ui_timer -= delta
-	if _sched_ui_timer <= 0.0:
-		_sched_ui_timer = 0.5
-		_refresh_schedule_ui()
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -136,34 +131,6 @@ func _on_npc_arrived(npc: NPC) -> void:
 func _location_name(map_id: String, room_id: String) -> String:
 	return Game.map_name(map_id) + "·" + Game.room_name(room_id, map_id)
 
-func _refresh_schedule_ui() -> void:
-	var panel := $UI/SchedulePanel as PanelContainer
-	panel.visible = ApiClient.backend_online and not ApiClient.last_world.is_empty()
-	if not panel.visible:
-		return
-	var npcs_data: Dictionary = ApiClient.last_world.get("npcs", {})
-	var lines: PackedStringArray = ["今日活动 · 实际行走后开始停留\n"]
-	for npc in npcs:
-		var info: Dictionary = npcs_data.get(npc.npc_name, {})
-		if info.is_empty():
-			continue
-		var map_id: String = info.get("map_id", Game.FLOOR3)
-		var room: String = info.get("room_id", info.get("grid", ""))
-		var target_map: String = info.get("target_map_id", Game.FLOOR3)
-		var target_room: String = info.get("target_room_id", info.get("target_grid", ""))
-		var place := _location_name(map_id, room)
-		var activity: Dictionary = info.get("activity", {})
-		if not activity.is_empty():
-			lines.append("%s　[%s] %s" % [npc.npc_name, activity.get("state_label", "等待"), activity.get("title", "基础作息")])
-			lines.append("目的地：%s" % _location_name(target_map, target_room))
-			lines.append("原因：%s" % activity.get("reason", "沿用基础作息"))
-			lines.append("%s\n" % activity.get("detail", ""))
-		elif map_id == target_map and room == target_room and not npc.is_travelling():
-			lines.append("%s　[已到] %s" % [npc.npc_name, place])
-		else:
-			lines.append("%s　%s → %s" % [npc.npc_name, place, _location_name(target_map, target_room)])
-	$UI/SchedulePanel/Scroll/ScheduleLabel.text = "\n".join(lines)
-
 # 随机演示只给空闲角色分配新目标，跨层行程会完整走完。
 func _random_schedule() -> void:
 	var idle := npcs.filter(func(npc: NPC) -> bool: return not npc.is_travelling())
@@ -182,7 +149,6 @@ func _on_online_changed(online: bool) -> void:
 	$UI/BtnAdv1h.disabled = not online
 	$UI/BtnAdv4h.disabled = not online
 	if not online:
-		$UI/SchedulePanel.visible = false
 		_sched_timer = 2.0
 
 func _sync_speed_picker() -> void:

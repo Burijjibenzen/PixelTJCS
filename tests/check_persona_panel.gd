@@ -62,6 +62,14 @@ func verify() -> void:
 	api.last_world = {"npcs": {"B": {"map_id": "zhixinguan_floor2", "room_id": "zx2_lib", "target_map_id": "jishilou_floor4", "target_room_id": "R05"}}}
 	panel._render_location()
 	if not check("智信馆" in panel.location_label.text and "济事楼" in panel.destination_label.text, "live world updates location and destination independently"): return
+	api.last_world.npcs.B.activity = {"title": "基础作息", "state_label": "正在前往", "reason": "基础作息", "detail": "正在前往目的地"}
+	panel._render_location()
+	for field in ["当前活动：基础作息", "活动状态：正在前往", "安排依据：基础作息", "行程说明：正在前往目的地"]:
+		if not check(field in panel.activity_label.text, "activity properties have explicit readable labels"): return
+	api.last_world.npcs.B.target_map_id = "zhixinguan_floor2"
+	api.last_world.npcs.B.target_room_id = "zx2_lib"
+	panel._render_location()
+	if not check(panel.destination_label.text.begins_with("目的地：") and "已在目的地" in panel.destination_label.text, "destination stays labelled even after arrival"): return
 	api.backend_online = false
 	panel._update_state()
 	if not check("上次同步" in panel.state_label.text and panel.title_label.text == "B的公开身份", "cached public profile remains available offline"): return

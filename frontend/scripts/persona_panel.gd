@@ -275,7 +275,7 @@ func _render_location() -> void:
 		destination = _place_name(info, true)
 		var activity: Dictionary = info.get("activity", {})
 		if not activity.is_empty():
-			activity_label.text = "%s · %s\n%s\n%s" % [activity.get("state_label", "等待"), activity.get("title", "基础作息"), activity.get("reason", ""), activity.get("detail", "")]
+			activity_label.text = "当前活动：%s\n活动状态：%s\n安排依据：%s\n行程说明：%s" % [activity.get("title", "基础作息"), activity.get("state_label", "等待"), activity.get("reason", "基础作息"), activity.get("detail", "等待出发")]
 		if current.is_empty():
 			current = str(_profile.get("location", {}).get("name", "位置待同步"))
 		if destination.is_empty():
@@ -287,8 +287,9 @@ func _render_location() -> void:
 				var room := Game.room_id_at(actor.global_position, map_id)
 				current = _place_name({"map_id": map_id, "room_id": room})
 	location_label.text = ("现在在：" if ApiClient.backend_online else "本地位置：") + (current if not current.is_empty() else "位置待同步")
-	destination_label.text = "当前目标：" + destination if not destination.is_empty() and destination != current else "当前所在区域即目的地" if ApiClient.backend_online and not destination.is_empty() else ""
+	destination_label.text = "目的地：" + destination + ("（已在目的地）" if destination == current else "") if not destination.is_empty() else ""
 	destination_label.visible = not destination_label.text.is_empty()
+	activity_label.visible = not activity_label.text.is_empty()
 
 
 func _update_state() -> void:

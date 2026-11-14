@@ -43,11 +43,13 @@ func verify() -> void:
 	var main = load("res://scenes/main.tscn").instantiate()
 	root.add_child(main)
 	main.set_process(false)
+	var social_ui
 	for child in main.get_children():
 		if child is CanvasLayer and child.get_script():
 			child.set_process(false)
 			child.visible = false
 			if child.get_script().resource_path.ends_with("social_ui.gd"):
+				social_ui = child
 				child.profile_panel.set_process(false)
 	for actor in main.npcs:
 		actor.set_physics_process(false)
@@ -79,7 +81,6 @@ func verify() -> void:
 		if world.is_empty():
 			continue
 		api._apply_world(world)
-		main._refresh_schedule_ui()
 		var activity: Dictionary = world.npcs[subject.npc_name].activity
 		if step % 1200 == 0:
 			print("Navigation frame ", step, " at ", subject.map_id, " goal ", subject.goal_room, " state ", activity.state)
@@ -95,23 +96,34 @@ func verify() -> void:
 			break
 	if not success:
 		fail("Dynamic library activity never actually arrived");return
-	var label: Label = main.get_node("UI/SchedulePanel/Scroll/ScheduleLabel")
-	if not "已到达／活动中" in label.text or not "原因：" in label.text or not "图书分馆" in label.text:
-		fail("Schedule panel is missing the activity status/destination/reason");return
+	if main.get_node_or_null("UI/SchedulePanel") != null:
+		fail("The duplicate fixed schedule panel must be removed");return
+	var profile = social_ui.profile_panel
+	profile.cache[subject.npc_name] = await fetch("/npcs/" + subject.npc_name.uri_encode() + "/profile")
+	for index in social_ui.picker.item_count:
+		if social_ui.picker.get_item_text(index) == subject.npc_name:
+			social_ui.picker.select(index)
+			social_ui.picker.item_selected.emit(index)
+	social_ui.visible = true
+	social_ui.panel.visible = true
+	social_ui.tabs.current_tab = 5
+	profile._render_location()
+	if not "活动状态：已到达／活动中" in profile.activity_label.text or not "安排依据：" in profile.activity_label.text or not "行程说明：" in profile.activity_label.text or not "图书分馆" in profile.destination_label.text:
+		fail("Profile activity fields need clear labels and live status/destination/reason");return
 	await process_frame
 	await process_frame
-	var scroll: ScrollContainer = label.get_parent()
-	if scroll.get_v_scroll_bar().max_value <= scroll.size.y or label.size.x > scroll.size.x + 1:
-		fail("Schedule list must fit its width and scroll for all ten NPCs");return
+	var scroll: ScrollContainer = profile.get_child(2)
+	if scroll.get_child(0).size.x > scroll.size.x + 1:
+		fail("Profile activity fields must fit the panel width");return
 	var preview := OS.get_environment("ROAM_DYNAMIC_PREVIEW")
 	if not preview.is_empty():
 		main._select_floor(2)
+		api.display_minutes = float(world.minutes)
+		api._refresh_clock_text()
 		main._process(0.0)
-		var preceding_lines := label.text.left(label.text.find("周冲")).count("\n")
-		scroll.scroll_vertical = int(preceding_lines * label.get_line_height())
 		await process_frame
 		await RenderingServer.frame_post_draw
 		if root.get_texture().get_image().save_png(preview) != OK:
 			fail("Could not save activity panel preview");return
-	print("PASS: dynamic event -> target sync -> real cross-building navigation -> arrival HTTP -> active dwell; stable target across midnight; scrollable schedule status/reasons")
+	print("PASS: dynamic event -> real cross-building navigation -> active dwell; stable target across midnight; labelled profile activity fields; no duplicate fixed panel")
 	quit(0)

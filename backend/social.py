@@ -15,6 +15,7 @@ from backend.event_stream import EventStream
 from backend.scheduler import Scheduler
 from backend.playback import dialogue_segments
 from backend.daily_planner import DynamicSchedule
+from backend.noticeboards import NoticeBoards, BOARDS
 
 
 class SocialService(GameService):
@@ -22,6 +23,9 @@ class SocialService(GameService):
         super().__init__(fresh_db=fresh_db)
         self.lock=threading.RLock()
         self.busy=set();self.reflecting=set();self.seen={}
+        self.reading=set()
+        self.reading_waiting=set()
+        self.notice_approaching=set()
         self.positions={}  # 临时实际坐标，不持久化；与WebSocket心跳在线状态分开。
         self.meetings=[];self.live_lines={};self.future=None
         self._closed=False
@@ -45,6 +49,7 @@ class SocialService(GameService):
             if row:self.world.clock.minutes=max(self.world.clock.now,float(row[0]))
         self.scheduler=Scheduler(self)
         self.planner=DynamicSchedule(self)
+        self.boards=NoticeBoards(self)
         for name in self.npcs:self.capture_memory(name)
 
     @contextmanager
@@ -86,6 +91,7 @@ class SocialService(GameService):
         if self._closed:return
         self._closed=True
         self.scheduler.stop()
+        self.boards.stop()
         self.planner.stop()
         self.save_clock()
         self.engine.close()
@@ -121,7 +127,7 @@ class SocialService(GameService):
             if m in self.active_meetings():m.update(state='cancelled',detail='已取消')
             return m
 
-    def available(self,a,b):return not ({a,b}&(self.busy|self.reflecting))
+    def available(self,a,b):return not ({a,b}&(self.busy|self.reflecting|self.reading|self.reading_waiting|self.notice_approaching))
 
     def nearby(self,a,b,now=None,allow_legacy=False):
         if a==b or a not in self.npcs or b not in self.npcs:return False
@@ -141,6 +147,8 @@ class SocialService(GameService):
 
     def assign_destination(self,name,area):
         with self.lock:
+            if name not in self.npcs or area not in AREAS:return False
+            if name in self.reading or name in self.reading_waiting or name in self.notice_approaching:self.boards.cancel(name)
             return self.planner.command(name,area)
 
     def report_arrival(self,npc_name,grid_id=None,map_id=None,room_id=None,arrived=None,activity_id=None,x=None,y=None):
@@ -151,7 +159,7 @@ class SocialService(GameService):
                 room=ROOMS.get((map_id,room_id))
                 if room is None or x is None or y is None or not all(math.isfinite(v) for v in (x,y)):
                     return False,'坐标需要有效的楼层、房间以及有限的x和y'
-                sample=dict(area=room['id'],x=x,y=y,at=time.monotonic())
+                sample=dict(area=room['id'],x=x,y=y,at=time.monotonic(),travelling=arrived is False)
             if npc_name in self.busy:
                 # 决策期间仍接收实际坐标，不能用预约前的旧位置开始远距离对话。
                 if sample:self.positions[npc_name]=sample
@@ -254,7 +262,7 @@ class SocialService(GameService):
             with self.lock:
                 reserved={n for m in self.active_meetings() for n in (m['a'],m['b'])}
                 if self.scheduler.stop_event.is_set():break
-                if name in self.busy or name in reserved:continue
+                if name in self.busy or name in self.reading or name in self.reading_waiting or name in self.notice_approaching or name in reserved:continue
                 self.reflecting.add(name)
             try:
                 self.engine.agents[name].graph.invoke({'task':'reflect'})
@@ -349,8 +357,14 @@ class SocialService(GameService):
             self.sync_clock()
             result=super().world_snapshot()
             for name,npc in result['npcs'].items():
-                npc['busy']=name in self.busy or name in self.reflecting
+                npc['busy']=name in self.busy or name in self.reflecting or name in self.reading or name in self.reading_waiting
                 npc['activity']=self.planner.describe(name)
+                if name in self.reading_waiting:
+                    npc['activity'].update(title='等待读公告',source='notice',state='waiting',state_label='等待阅读',
+                        reason='已安排在公告栏前阅读',detail=self.boards.wait_reason(name))
+                if name in self.reading:
+                    npc['activity'].update(title='阅读公告',source='notice',state='active',state_label='阅读中',
+                        reason='在公告栏前了解校园通知',detail='正在阅读，读完后继续原来的安排')
             targeted=set()
             for m in self.planner.eligible_meetings():
                 for name in (m['a'],m['b']):
@@ -362,6 +376,13 @@ class SocialService(GameService):
             result['social']=dict(meetings=[dict(m) for m in self.meetings],**self.control_state(),epoch=self.epoch,
                                  position_report_seconds=SOCIAL.position_report_seconds,
                                  model_configured=bool(getattr(getattr(self.llm,'cfg',None),'api_key','')))
+            for name,trip in self.boards.approaches.items():
+                board=BOARDS[trip['board_id']]
+                npc=result['npcs'][name]
+                npc.update(target_map_id=board['map_id'],target_room_id=board['room_id'],target_grid=grid_of(board['area']),
+                    target_position=dict(x=trip['x'],y=trip['y']))
+                npc['activity'].update(title='走近公告栏',area=board['area'],source='notice',state='travelling',state_label='正在前往',
+                    reason='附近发现未读公告',detail='走到公告栏前阅读，随后继续原安排')
             return result
 
 class Meet(BaseModel):
@@ -375,8 +396,43 @@ class Control(BaseModel):
     paused:bool|None=None
     speed:float|None=Field(default=None,ge=0,le=60,allow_inf_nan=False)
 
+class BoardNotice(BaseModel):
+    title:str=Field(min_length=1,max_length=80)
+    content:str=Field(min_length=1,max_length=500)
+
+class BoardReader(BaseModel):
+    npc:str
+
 
 def install(app,get_service):
+    @app.get('/noticeboards')
+    def noticeboards():return {'boards':[dict(b) for b in BOARDS.values()]}
+
+    @app.get('/noticeboards/{board_id}/notices')
+    def board_notices(board_id:str):
+        s=get_service()
+        with s.lock:
+            try:return s.boards.listing(board_id)
+            except KeyError:raise HTTPException(404,'公告栏不存在')
+
+    @app.post('/noticeboards/{board_id}/notices')
+    def publish_notice(board_id:str,req:BoardNotice):
+        s=get_service()
+        with s.lock:
+            try:return s.boards.publish(board_id,req.title,req.content)
+            except KeyError:raise HTTPException(404,'公告栏不存在')
+            except ValueError as exc:raise HTTPException(400,str(exc))
+
+    @app.post('/noticeboards/{board_id}/read')
+    def read_notice(board_id:str,req:BoardReader):
+        s=get_service()
+        with s.lock:
+            try:
+                result=s.boards.request_read(req.npc,board_id)
+                return dict(ok=True,detail=result['detail'],reading=result)
+            except KeyError:raise HTTPException(404,'未知角色或公告栏')
+            except ValueError as exc:raise HTTPException(409,str(exc))
+
     @asynccontextmanager
     async def lifespan(_app):
         service=get_service();service.start()

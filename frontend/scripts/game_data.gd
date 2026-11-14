@@ -42,13 +42,15 @@ func _ready() -> void:
 			"name": manifest.name, "origin": _cell(grid.origin), "size": astar.region.size,
 			"offset": next_offset, "astar": astar, "rooms": {}, "waypoint_rooms": {},
 			"room_by_cell": {}, "floor_cells": {}, "region_cells": {}, "door_cells": [],
-			"stairs": {}, "doors": [],
+			"stairs": {}, "doors": [], "noticeboards": [],
 		}
 		for room: Dictionary in manifest.rooms:
 			floor.rooms[room.id] = room
 			for waypoint in room.get("waypoints", {}):
 				floor.waypoint_rooms[waypoint] = room.id
 		for obj: Dictionary in manifest.objects:
+			if obj.type == "notice":
+				floor.noticeboards.append({"id": map_id + ":" + str(obj.id), "object_id": obj.id, "map_id": map_id, "room_id": obj.room, "cells": obj.get("cells", [obj.cell]), "location": manifest.name + " · " + str(floor.rooms[obj.room].name)})
 			if obj.type == "door":
 				floor.doors.append(obj)
 				for point in obj.get("passage_cells", obj.get("cells", [obj.cell])):

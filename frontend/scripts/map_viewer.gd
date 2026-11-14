@@ -1,4 +1,5 @@
 extends CanvasLayer
+signal notice_board_requested(board_id: String)
 ## 独立楼层浏览器。试走使用独立网格，楼梯出口与 NPC 寻路保持一致。
 
 const IDS := ["jishilou_floor3", "jishilou_floor4", "zhixinguan_floor2"]
@@ -172,6 +173,17 @@ func _cache_doors() -> void:
 
 func _use(item: Dictionary) -> void:
 	match str(item.type):
+		"notice":
+			var key := "%s:%s" % [IDS[current_floor], item.id]
+			notice_board_requested.emit(key)
+			if not notice_board_requested.has_connections():
+				var board_ui = get_node_or_null("NoticeBoard")
+				if board_ui == null:
+					board_ui = load("res://scripts/notice_board.gd").new()
+					board_ui.name = "NoticeBoard"
+					add_child(board_ui)
+				board_ui.open_board(key)
+			status.text = "正在查看公告栏"
 		"door":
 			var key := _door_key(item)
 			var opening := not bool(open_doors.get(key, false))

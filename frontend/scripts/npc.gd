@@ -63,10 +63,11 @@ func go_to_location(target_map: String, rid: String) -> bool:
 	var target := Game.nav_world_of(rid, target_map)
 	return _start_trip(target_map, rid, target)
 
-func go_to(world_pos: Vector2) -> void:
+func go_to(world_pos: Vector2) -> bool:
 	var rid := Game.room_id_at(world_pos, map_id)
 	if not rid.is_empty():
-		_start_trip(map_id, rid, world_pos)
+		return _start_trip(map_id, rid, world_pos)
+	return false
 
 func _start_trip(target_map: String, rid: String, target: Vector2) -> bool:
 	var planned := Game.route(map_id, global_position, target_map, target)

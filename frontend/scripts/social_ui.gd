@@ -1,4 +1,5 @@
 extends CanvasLayer
+signal notice_board_requested(board_id: String)
 ## M3 独立观察界面：WebSocket 事件流、分组并发气泡、记忆/关系面板。
 # 原版节奏：新台词立即替换，每段最多显示十个现实秒；不限制人物行动。
 const BUBBLE_SECONDS := 10.0
@@ -32,6 +33,7 @@ var control_pending := false
 var model_status: Label
 var status: Label
 var panel: PanelContainer
+var notice_button: Button
 var paused := false
 var fetching := "memory"
 var panel_name := ""
@@ -75,6 +77,12 @@ func _ready() -> void:
 	open.text = "社交观察 / 收起"
 	open.position = Vector2(450, 12)
 	add_child(open)
+	notice_button = Button.new()
+	notice_button.text = "公告栏"
+	notice_button.position = Vector2(590, 12)
+	notice_button.tooltip_text = "查看当前楼层的公告栏"
+	notice_button.pressed.connect(func(): notice_board_requested.emit(""))
+	add_child(notice_button)
 	panel = PanelContainer.new()
 	panel.position = Vector2(760, 55)
 	panel.size = Vector2(500, 530)

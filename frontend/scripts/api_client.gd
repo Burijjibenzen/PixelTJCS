@@ -38,6 +38,7 @@ var _pending_positions := {}  # 每名 NPC 只保留最新待发送位置
 var _sending_position := {}
 var _confirmed_positions := {}
 var _speed_pending := false
+var _point_targets := {}
 var _position_timer := 0.0
 var position_report_interval := 0.25
 
@@ -133,6 +134,7 @@ func _apply_world(data: Dictionary) -> void:
 		backend_online = true
 		_confirmed_positions.clear()
 		_pending_positions.clear()
+		_point_targets.clear()
 		print("[ApiClient] 已连接后端, 切换为后端日程驱动")
 		online_changed.emit(true)
 	for npc in _npcs:
@@ -145,8 +147,17 @@ func _apply_world(data: Dictionary) -> void:
 		npc.social_busy = bool(info.get("busy", false))
 		var target_map := str(info.get("target_map_id", Game.FLOOR3))
 		var target_room := str(info.get("target_room_id", info.get("target_grid", "")))
-		if target_room != "" and (target_map != npc.goal_map_id or target_room != npc.goal_room):
-			npc.go_to_location(target_map, target_room)
+		var point: Dictionary = info.get("target_position", {})
+		if point.has("x") and point.has("y") and target_map == npc.map_id:
+			var destination: Vector2 = Game.map_offset(target_map) + Vector2(float(point.x), float(point.y))
+			if Game.room_id_at(destination, target_map) == target_room and (_point_targets.get(npc.npc_name) != destination or npc.goal_room != target_room):
+				if npc.go_to(destination):
+					_point_targets[npc.npc_name] = destination
+		elif target_room != "":
+			var restore_room := _point_targets.has(npc.npc_name)
+			_point_targets.erase(npc.npc_name)
+			if restore_room or target_map != npc.goal_map_id or target_room != npc.goal_room:
+				npc.go_to_location(target_map, target_room)
 		var confirmed: Dictionary = _confirmed_positions.get(npc.npc_name, {})
 		if confirmed.has("map_id") and (confirmed.map_id != info.get("map_id") or confirmed.room_id != info.get("room_id")):
 			_confirmed_positions.erase(npc.npc_name)

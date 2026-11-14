@@ -121,3 +121,20 @@ class ActivityConfig:
 
 
 ACTIVITY = ActivityConfig()
+
+
+@dataclass
+class NoticeBoardConfig:
+    read_radius: float = 64.0
+    discovery_radius: float = 192.0
+    approach_timeout_seconds: float = 30.0
+    read_seconds: float = 2.5  # 现实秒，快进不省略阅读过程。
+    reader_cooldown_seconds: float = 10.0
+    max_readers: int = 3
+    max_notices_per_board: int = 100
+    importance: float = 0.45
+    retry_seconds: float = 30.0
+    queue_timeout_seconds: float = 300.0
+
+
+NOTICEBOARD = NoticeBoardConfig()

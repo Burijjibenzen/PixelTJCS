@@ -313,6 +313,9 @@ class DynamicSchedule:
             self._state(item,'active','已到达，正在进行活动')
 
     def _blocked(self, name, item):
+        if name in self.s.notice_approaching:return '正在走近公告栏，随后继续原行程'
+        if name in self.s.reading_waiting:return '已安排阅读公告，等待当前任务结束'
+        if name in self.s.reading:return '正在阅读公告，稍后继续行程'
         if name in self.s.busy or name in self.s.reflecting:return '正在交谈或整理思绪，稍后继续行程'
         if not self.s.available(name,name):return '等待角色空闲'
         if item['source']!='manual' and any(name in (m['a'],m['b']) for m in self.eligible_meetings()):return '先处理已有会面，之后恢复活动'

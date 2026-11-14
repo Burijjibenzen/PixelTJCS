@@ -83,6 +83,7 @@ class Scheduler:
                     s.emit('conversation_released',conversation_id=key,participants=playback['participants'])
             self.jobs={p:f for p,f in self.jobs.items() if not f.done()}
             if not s.paused:
+                s.boards.tick(now,elapsed)
                 s.planner.tick(now,elapsed)
                 self.meetings(now,elapsed)
                 self.natural(now)

@@ -11,6 +11,7 @@ var current_map := Game.FLOOR3
 var _sched_timer := 2.0
 var _dbg_prev := false
 var social_ui
+var notice_ui
 
 @onready var camera := $Cam
 @onready var floor_picker: OptionButton = $UI/FloorPicker
@@ -45,6 +46,11 @@ func _ready() -> void:
 	social_ui = load("res://scripts/social_ui.gd").new()
 	social_ui.setup(npcs)
 	add_child(social_ui)
+	notice_ui = load("res://scripts/notice_board.gd").new()
+	notice_ui.setup(npcs)
+	add_child(notice_ui)
+	social_ui.notice_board_requested.connect(_open_notice_board)
+	$MapBrowser.notice_board_requested.connect(_open_notice_board)
 	ApiClient.setup(npcs)
 	ApiClient.online_changed.connect(_on_online_changed)
 	$UI/BtnAdv1h.pressed.connect(func() -> void: ApiClient.advance_time(60))
@@ -96,6 +102,22 @@ func _unhandled_input(event: InputEvent) -> void:
 		follow_npc(picked)
 		social_ui.show_profile(picked.npc_name)
 		get_viewport().set_input_as_handled()
+		return
+	var world_point: Vector2 = get_global_transform_with_canvas().affine_inverse() * event.position
+	var cell := Game.cell_of(world_point, current_map)
+	for board: Dictionary in Game.floor_data[current_map].get("noticeboards", []):
+		for raw: Array in board.cells:
+			if cell == Vector2i(int(raw[0]), int(raw[1])):
+				_open_notice_board(str(board.id))
+				get_viewport().set_input_as_handled()
+				return
+
+func _open_notice_board(board_id: String) -> void:
+	if board_id.is_empty():
+		var floor_boards: Array = Game.floor_data[current_map].get("noticeboards", [])
+		if not floor_boards.is_empty():
+			board_id = str(floor_boards[0].id)
+	notice_ui.open_board(board_id)
 
 func _select_floor(index: int) -> void:
 	cancel_follow()

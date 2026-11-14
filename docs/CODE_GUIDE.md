@@ -16,6 +16,7 @@
 | 能力 | 状态 | 入口 |
 |---|---|---|
 | 人格卡系统（10 张） | ✅ | `personas/*.json` |
+| 公开人格卡与可视化资料页 | ✅ | `GET /npcs/{name}/profile`、`persona_panel.gd`；秘密字段不进入公开响应，详见 `PUBLIC_PROFILES.md` |
 | NPC↔NPC 多轮对话 | ✅ | `POST /conversation`、`run_demo.py` |
 | 记忆写入 + 向量检索 | ✅ | `backend/memory.py` |
 | 遗忘三机制（衰减/淘汰/反思） | ✅ | `GameService.advance_time()` |
@@ -132,6 +133,8 @@ run_demo.py ┘                        ├─> relations.py ──────�
 系统提示词（所有说话请求的"人设底座"）；`render_secret_hint()` 输出秘密
 提示（**只注入本人上下文**，实现"只有我知道、被好友套话才可能说漏"）。
 `load_all_personas()` 扫描 personas/ 目录，坏卡跳过不拖累全局。
+
+`public_profile()` 明确列出公开字段，返回副本，不包含 `secrets`、内部关系配置或原始提示词。`GameService.public_npc_profile()` 补充世界地点与日程名称，API响应模型再限制输出结构。Godot的“角色资料”页复用已有角色选择器，支持离线、缓存、长文本与实时地点，详见 [PUBLIC_PROFILES.md](PUBLIC_PROFILES.md)。
 
 ### backend/memory.py —— 自研记忆服务 ★核心★
 一条记忆的生命周期（`MemoryItem` ↔ SQLite 表 `memories`）:
@@ -300,6 +303,7 @@ run_demo.py
 | GET | `/health` | 健康检查 |
 | GET | `/world` | 世界快照（时间/全员位置/最近事件）；每个 NPC 带有当前位置 `map_id` / `room_id` 与目的地 `target_map_id` / `target_room_id` |
 | GET | `/npcs` | 角色名单（身份/性格/位置） |
+| GET | `/npcs/{name}/profile` | 公开人格、目标、地点和日程；字段白名单，不含秘密和内部关系配置；未知角色404 |
 | GET | `/npcs/{name}/memory` | ★个人记忆面板: `active`/`forgotten`/`reflections` 三视图 |
 | GET | `/relations` | 全员关系矩阵（0~100，None=陌生人） |
 | GET | `/areas` | 区域地图 |

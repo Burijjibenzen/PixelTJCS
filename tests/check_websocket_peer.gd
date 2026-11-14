@@ -17,6 +17,7 @@ func verify() -> void:
 	ui.setup(actors)
 	root.add_child(ui)
 	ui.set_process(false)
+	ui.profile_panel.set_process(false)
 	ui.history_pending = true
 	ui.socket.connect_to_url(url + "/ws/events?after=0")
 	var deadline := Time.get_ticks_msec() + 30000

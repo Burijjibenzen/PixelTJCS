@@ -46,6 +46,8 @@ var meeting_status: Label
 var notice := ""
 var notice_until := 0.0
 var speed_picker: OptionButton
+var profile_panel
+var profile_hidden: Array[Control] = []
 
 func setup(npcs: Array) -> void:
 	actors = npcs
@@ -156,6 +158,8 @@ func _ready() -> void:
 	box.add_child(meeting_status)
 	picker.item_selected.connect(func(_i):
 		panel_timer = 0
+		if profile_panel:
+			profile_panel.select_npc(picker.get_item_text(picker.selected))
 		history_items.clear()
 		history_slider.max_value = 0
 		_fetch_history()
@@ -196,7 +200,27 @@ func _ready() -> void:
 	# M3: 新台词到达时跟随日志末尾，避免停在旧内容误以为未收到。
 	dialogue_log.scroll_following = true
 	tabs.add_child(dialogue_log)
-	tabs.tab_changed.connect(func(_i): panel_timer = 0)
+	# 公开资料是独立页，沿用现有选择器；原记忆/关系/日志页的编号保持不变。
+	profile_panel = load("res://scripts/persona_panel.gd").new()
+	profile_panel.name = "角色资料"
+	profile_panel.custom_minimum_size = Vector2(480, 250)
+	profile_panel.setup(actors)
+	tabs.add_child(profile_panel)
+	if picker.item_count > 0:
+		profile_panel.select_npc(picker.get_item_text(picker.selected))
+	profile_hidden = [status, model_status, meet_row, cancel, meeting_status, history_label, history_slider]
+	tabs.tab_changed.connect(_on_tab_changed)
+	tabs.current_tab = 5
+	_on_tab_changed(tabs.current_tab)
+
+
+func _on_tab_changed(index: int) -> void:
+	panel_timer = 0
+	# 资料页专注人物信息；原有会面和记忆时间线控件在其它页保持可用。
+	for control in profile_hidden:
+		control.visible = index != 5
+	tabs.custom_minimum_size.y = 450 if index == 5 else 250
+	panel.reset_size()
 
 func _process(delta: float) -> void:
 	_poll_socket(delta)
@@ -219,7 +243,7 @@ func _process(delta: float) -> void:
 	if not ApiClient.backend_online:
 		status.text = "WebSocket 重连中 · 世界接口暂未连接"
 		return
-	if panel.visible and panel_timer <= 0 and not panel_pending and picker.item_count > 0 and tabs.current_tab != 4:
+	if panel.visible and panel_timer <= 0 and not panel_pending and picker.item_count > 0 and tabs.current_tab < 4:
 		panel_timer = 2
 		panel_pending = true
 		panel_name = picker.get_item_text(picker.selected)

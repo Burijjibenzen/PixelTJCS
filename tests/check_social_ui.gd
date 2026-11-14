@@ -21,6 +21,7 @@ func verify() -> void:
 	ui.setup(actors)
 	root.add_child(ui)
 	ui.set_process(false)
+	ui.profile_panel.set_process(false)
 	ui.history_pending = true
 	ui._accept_stream({"kind": "snapshot", "id": 50, "epoch": "test", "live": [], "world": {"npcs": {}, "time": "08:00"}})
 	var first := {"kind": "dialogue_line", "id": 1, "conversation_id": "one", "sequence": 1, "participants": ["A", "B"], "speaker": "A", "text": "你好"}

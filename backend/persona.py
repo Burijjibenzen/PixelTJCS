@@ -66,6 +66,18 @@ class PersonaCard:
         return card
 
     # ------------------------------------------------------------------
+    def public_profile(self) -> dict:
+        """公开资料白名单；不序列化整张卡，秘密和内部关系配置仅留在服务端。"""
+        return {
+            "name": self.name, "role": self.role, "title": self.title,
+            "expertise": self.expertise or "", "mbti": self.mbti or "",
+            "traits": list(self.traits or []), "tone": self.tone or "",
+            "catchphrase": self.catchphrase or "",
+            "goals": {"short_term": self.goals_short or "", "long_term": self.goals_long or ""},
+            "schedule": dict(self.schedule or {}),
+        }
+
+    # ------------------------------------------------------------------
     def render_system_prompt(self) -> str:
         """把人格卡渲染成完整的系统提示词（NPC 每次说话都用它打底）。"""
         return f"""你是校园多智能体仿真中的角色「{self.name}」，请完全以第一人称沉浸扮演。

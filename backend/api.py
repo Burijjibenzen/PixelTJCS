@@ -78,6 +78,40 @@ class ChatReq(BaseModel):
     message: str
 
 
+class PublicLocation(BaseModel):
+    area: Optional[str] = None
+    name: str = "未知地点"
+    map_id: Optional[str] = None
+    room_id: Optional[str] = None
+
+
+class PublicGoals(BaseModel):
+    short_term: str = ""
+    long_term: str = ""
+
+
+class PublicScheduleEntry(BaseModel):
+    time: str
+    location: PublicLocation
+
+
+class PublicNPCProfile(BaseModel):
+    """响应也使用白名单；未来内部新增字段不会自动流到前端。"""
+    name: str
+    role: str
+    title: str
+    expertise: str = ""
+    mbti: str = ""
+    traits: list[str] = Field(default_factory=list)
+    tone: str = ""
+    catchphrase: str = ""
+    goals: PublicGoals
+    schedule: list[PublicScheduleEntry] = Field(default_factory=list)
+    location: PublicLocation
+    destination: PublicLocation
+    game_time: str
+
+
 # ----------------------------------------------------------------------
 # 只读接口
 # ----------------------------------------------------------------------
@@ -96,6 +130,14 @@ def world_snapshot():
 def npc_list():
     """角色名单（含身份/性格/当前位置）。"""
     return get_service().npc_list()
+
+
+@app.get("/npcs/{name}/profile", response_model=PublicNPCProfile)
+def npc_public_profile(name: str):
+    profile = get_service().public_npc_profile(name)
+    if profile is None:
+        raise HTTPException(404, f"角色不存在: {name}")
+    return profile
 
 
 @app.get("/npcs/{name}/memory")

@@ -15,7 +15,7 @@ from backend.memory import MemoryStore
 from backend.npc import NPCAgent
 from backend.persona import PersonaCard, load_all_personas
 from backend.relations import RelationGraph
-from backend.world import World
+from backend.world import AREAS, ROOMS, World
 
 log = get_logger(__name__)
 
@@ -126,6 +126,30 @@ class GameService:
             }
             for c in self.cards.values()
         ]
+
+    def public_npc_profile(self, npc_name: str) -> Optional[dict]:
+        """公开人格和实际位置；房间名称沿用世界清单，不暴露卡片内部字段。"""
+        card = self.cards.get(npc_name)
+        if card is None:
+            return None
+
+        def location(area_id):
+            area = AREAS.get(area_id, {})
+            return {
+                "area": area_id, "name": area.get("name", "未知地点"),
+                "map_id": area.get("map_id"), "room_id": area.get("room_id"),
+            }
+
+        profile = card.public_profile()
+        snapshot = self.world_snapshot()
+        current = snapshot["npcs"].get(npc_name, {})
+        profile["location"] = location(current.get("area"))
+        target = ROOMS.get((current.get("target_map_id"), current.get("target_room_id")), {})
+        profile["destination"] = location(target.get("id"))
+        profile["schedule"] = [{"time": at, "location": location(area)}
+                               for at, area in sorted(profile["schedule"].items())]
+        profile["game_time"] = snapshot["time"]
+        return profile
 
     def memory_panel(self, npc_name: str) -> Optional[dict]:
         """个人记忆面板：活跃 / 已遗忘 / 洞察 三视图。"""

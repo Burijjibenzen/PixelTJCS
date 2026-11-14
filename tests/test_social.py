@@ -5,6 +5,8 @@ import tempfile
 import threading
 import time
 import unittest
+import json
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -50,6 +52,93 @@ class SocialTests(unittest.TestCase):
         app=FastAPI();install(app,lambda:self.s)
         app.get('/health')(lambda:{'status':'ok'})
         return TestClient(app)
+
+    @contextmanager
+    def profile_client(self):
+        from backend import api
+        # 使用真实API路由，但不启动调度器或接触开发数据库。
+        with patch.object(api,'_service',self.s):
+            client=TestClient(api.app)
+            try:yield client
+            finally:client.close()
+
+    def test_public_profiles_exclude_private_fields_without_model_calls(self):
+        before=[]
+        for card in self.s.cards.values():
+            card.secrets.append('PRIVATE_SENTINEL_'+card.name)
+            card.internal_note='FUTURE_PRIVATE_FIELD'
+        with self.s.database() as db:before=db.execute('SELECT COUNT(*) FROM memories').fetchone()[0]
+        expected={'name','role','title','expertise','mbti','traits','tone','catchphrase','goals','schedule','location','destination','game_time'}
+        with self.profile_client() as client,patch.object(self.s.llm,'chat',side_effect=AssertionError('must not call model')),patch.object(self.s.llm,'chat_json',side_effect=AssertionError('must not call model')),patch.object(self.s.llm,'embed',side_effect=AssertionError('must not call model')):
+            for name,card in self.s.cards.items():
+                response=client.get('/npcs/'+name+'/profile')
+                self.assertEqual(200,response.status_code)
+                data=response.json()
+                self.assertEqual(expected,set(data))
+                self.assertEqual(name,data['name'])
+                for secret in card.secrets:self.assertNotIn(secret,response.text)
+                self.assertNotIn('FUTURE_PRIVATE_FIELD',response.text)
+            self.assertEqual(404,client.get('/npcs/不存在的角色/profile').status_code)
+        with self.s.database() as db:self.assertEqual(before,db.execute('SELECT COUNT(*) FROM memories').fetchone()[0])
+
+    def test_public_profile_projection_does_not_change_private_prompt(self):
+        card=self.s.cards[self.a]
+        hint,system=card.render_secret_hint(),card.render_system_prompt()
+        result=card.public_profile()
+        result['traits'].append('外部修改')
+        result['schedule']['23:59']='j3_pantry'
+        result['goals']['short_term']='外部目标'
+        self.assertNotIn('外部修改',card.traits)
+        self.assertNotIn('23:59',card.schedule)
+        self.assertNotEqual('外部目标',card.goals_short)
+        self.assertEqual(hint,card.render_secret_hint())
+        self.assertEqual(system,card.render_system_prompt())
+        self.assertNotIn('secrets',result)
+        self.assertNotIn('initial_relations',result)
+        self.assertNotIn('example_lines',result)
+
+    def test_public_profile_defaults_and_unknown_schedule_location(self):
+        from backend.persona import PersonaCard
+        path=Path(self.tmp.name)/'minimal.json'
+        path.write_text(json.dumps(dict(name=self.a,role='student',title='最小资料'),ensure_ascii=False),encoding='utf-8')
+        card=PersonaCard.from_file(str(path))
+        self.s.cards[self.a]=card
+        with self.profile_client() as client:
+            data=client.get('/npcs/'+self.a+'/profile').json()
+            self.assertEqual([],data['traits'])
+            self.assertEqual([],data['schedule'])
+            self.assertEqual({'short_term':'','long_term':''},data['goals'])
+            card.schedule={'09:00':'not-a-room','08:00':'j3_lab'}
+            response=client.get('/npcs/'+self.a+'/profile')
+            self.assertEqual(200,response.status_code)
+            rows=response.json()['schedule']
+            self.assertEqual(['08:00','09:00'],[row['time'] for row in rows])
+            self.assertEqual('未知地点',rows[1]['location']['name'])
+
+    def test_public_profile_uses_actual_location_and_current_destination(self):
+        actual=next(room for room in ROOMS.values() if room['map_id']=='zhixinguan_floor2')
+        target=next(room for room in ROOMS.values() if room['map_id']=='jishilou_floor4')
+        self.s.world.set_area(self.a,actual['id'])
+        self.s.world.assign_override(self.a,target['id'])
+        with self.profile_client() as client:
+            data=client.get('/npcs/'+self.a+'/profile').json()
+            self.assertEqual(actual['map_id'],data['location']['map_id'])
+            self.assertEqual(actual['room_id'],data['location']['room_id'])
+            self.assertEqual(target['room_id'],data['destination']['room_id'])
+            self.assertEqual(target['map_id'],data['destination']['map_id'])
+            self.s.world.set_area(self.a,target['id'])
+            self.assertEqual(target['room_id'],client.get('/npcs/'+self.a+'/profile').json()['location']['room_id'])
+
+    def test_public_profile_response_schema_filters_future_internal_fields(self):
+        data=self.s.public_npc_profile(self.a)
+        data['secrets']=['PRIVATE_ROOT']
+        data['goals']['secrets']='PRIVATE_GOAL'
+        data['location']['raw_prompt']='PRIVATE_LOCATION'
+        with self.profile_client() as client,patch.object(self.s,'public_npc_profile',return_value=data):
+            response=client.get('/npcs/'+self.a+'/profile')
+            self.assertEqual(200,response.status_code)
+            for marker in ('PRIVATE_ROOT','PRIVATE_GOAL','PRIVATE_LOCATION'):
+                self.assertNotIn(marker,response.text)
 
     def test_graph_nodes_real_execution_and_cooldown(self):
         before=self.s.relations.get(self.a,self.b)

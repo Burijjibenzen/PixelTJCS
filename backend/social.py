@@ -33,7 +33,7 @@ class SocialService(GameService):
         self.resume_speed=SOCIAL.speed
         self.clock_sample=None
         self.maintenance_due=False
-        self.bus=EventStream(self.memory.cfg.db_path,SOCIAL.websocket_queue)
+        self.bus=EventStream(self.memory.cfg.db_path,SOCIAL.websocket_queue,SOCIAL.event_history_limit)
         self.engine.require_colocated=True
         self.engine.emit=self.emit
         self.engine.gossip_writer=self.write_gossip
@@ -43,9 +43,26 @@ class SocialService(GameService):
                 CREATE TABLE IF NOT EXISTS social_changes(a TEXT,b TEXT,delta REAL,PRIMARY KEY(a,b));
                 CREATE TABLE IF NOT EXISTS gossip(root TEXT,holder TEXT,source TEXT,content TEXT,hops INTEGER,memory_id TEXT,PRIMARY KEY(root,holder));
                 CREATE TABLE IF NOT EXISTS m3_memory_history(id INTEGER PRIMARY KEY AUTOINCREMENT,npc TEXT,game_time REAL,payload TEXT);
+                CREATE INDEX IF NOT EXISTS idx_m3_memory_history_npc_id ON m3_memory_history(npc,id);
             """)
             row=db.execute("SELECT value FROM social_state WHERE key='clock'").fetchone()
-            if row:self.world.clock.minutes=max(self.world.clock.now,float(row[0]))
+            if row:
+                self.world.clock.minutes=max(self.world.clock.now,float(row[0]))
+                self.world.apply_schedules()
+            for key, target in (('npc_area',self.world.npc_area),('last_chat_at',self.world.last_chat_at)):
+                saved=db.execute('SELECT value FROM social_state WHERE key=?',(key,)).fetchone()
+                if saved:
+                    try:
+                        values=json.loads(saved[0])
+                        if key=='npc_area':
+                            target.update({name:area for name,area in values.items()
+                                           if name in self.npcs and area in AREAS})
+                        else:
+                            target.update({tuple(pair):float(at) for pair,at in values
+                                           if len(pair)==2 and all(name in self.npcs for name in pair)})
+                    except (TypeError,ValueError):
+                        pass
+            for name in self.npcs:self._prune_memory_history(db,name)
         self.scheduler=Scheduler(self)
         self.planner=DynamicSchedule(self)
         self.boards=NoticeBoards(self)
@@ -68,6 +85,9 @@ class SocialService(GameService):
                     self.live_lines[data['conversation_id']]=dict(data=dict(data),
                         participants=data['participants'],start=start,
                         end=start+sum(segment['seconds'] for segment in data['segments']))
+            if kind=='dialogue_finished':
+                current=self.live_lines.get(data['conversation_id'])
+                if current:current['finished']=True
             if kind=='relation_changed':
                 with self.database() as db:
                     db.execute('INSERT OR REPLACE INTO social_changes VALUES(?,?,?)',(*sorted((data['a'],data['b'])),data['delta']))
@@ -79,11 +99,16 @@ class SocialService(GameService):
         with self.lock:
             now=time.monotonic()
             return [dict(line['data'],playback_elapsed=max(0,now-line['start']))
-                    for line in self.live_lines.values() if line['end']>now]
+                    for line in self.live_lines.values() if line['end']>now and not line.get('finished')]
 
     def save_clock(self):
-        with self.database() as db:
-            db.execute("INSERT OR REPLACE INTO social_state VALUES('clock',?)",(str(self.world.clock.now),))
+        with self.lock:
+            with self.database() as db:
+                db.execute("INSERT OR REPLACE INTO social_state VALUES('clock',?)",(str(self.world.clock.now),))
+                db.execute("INSERT OR REPLACE INTO social_state VALUES('npc_area',?)",
+                           (json.dumps(self.world.npc_area,ensure_ascii=False),))
+                db.execute("INSERT OR REPLACE INTO social_state VALUES('last_chat_at',?)",
+                           (json.dumps([[list(pair),at] for pair,at in self.world.last_chat_at.items()]),))
 
     def start(self):self.scheduler.start()
     def stop(self):
@@ -115,7 +140,8 @@ class SocialService(GameService):
             if len(self.active_meetings())>=50:raise HTTPException(409,'会面队列已满')
             self.meetings=self.active_meetings()+[m for m in self.meetings if m not in self.active_meetings()][-50:]
             m=dict(id=uuid.uuid4().hex,a=a,b=b,area=AREAS[area]['id'] if area else None,
-                   state='waiting',detail='等待双方空闲',travel_seconds=0.0,trigger=trigger)
+                   state='waiting',detail='等待双方空闲',travel_seconds=0.0,
+                   wait_seconds=0.0,trigger=trigger)
             self.meetings.append(m)
             return m
 
@@ -173,6 +199,7 @@ class SocialService(GameService):
                 self.planner.arrived(npc_name,arrived,activity_id)
         if result[0] and result[1]=='moved':
             self.emit('movement',npc=npc_name,area=self.world.area_of(npc_name))
+            self.save_clock()
         return result
 
     def run_conversation(self,a,b,trigger,scheduled=None):
@@ -194,12 +221,24 @@ class SocialService(GameService):
             if m:m.update(state='talking',detail='LangGraph 对话中')
         result=self.engine.run(a,b,trigger,run_id=run_id,gossip=candidate)
         if not result:raise ValueError('对话校验未通过')
-        self.finish(a,b,meeting_id)
+        self.finish(a,b,meeting_id,run_id)
         return result
 
-    def finish(self,a,b,meeting_id=''):
+    def _hold_final_bubble(self, run_id):
+        # 没有前端观察者时不增加模拟运行时间；有观察者也只等待最后一句的前三秒。
+        with self.bus.lock:observed=bool(self.bus.clients)
+        if not observed:return
         with self.lock:
-            # 模型处理完成即释放角色；气泡只是观察层，不延迟日程或下一场社交。
+            line=self.live_lines.get(run_id)
+            deadline=line['start']+SOCIAL.bubble_exit_hold_seconds if line else 0.0
+        delay=max(0.0,deadline-time.monotonic())
+        if delay:time.sleep(delay)
+
+    def finish(self,a,b,meeting_id='',run_id=''):
+        if run_id:self._hold_final_bubble(run_id)
+        with self.lock:
+            if run_id:self.emit('dialogue_finished',event_key=run_id+':visual_end',
+                                conversation_id=run_id,participants=[a,b])
             self.busy.difference_update((a,b))
             m=self.meeting(meeting_id)
             if m:m.update(state='completed',detail='会面完成')
@@ -222,7 +261,7 @@ class SocialService(GameService):
             self.busy.update((a,b))
         try:
             result=self.engine.resume(run_id)
-            self.finish(a,b)
+            self.finish(a,b,run_id=run_id)
             return result
         finally:
             with self.lock:
@@ -348,9 +387,28 @@ class SocialService(GameService):
 
     def capture_memory(self,name):
         panel=self.memory_panel(name)
+        signature=json.dumps({section:[{k:v for k,v in item.items() if k!='strength'}
+                                       for item in panel[section]]
+                              for section in ('active','forgotten','reflections')},sort_keys=True,ensure_ascii=False)
         with self.database() as db:
+            previous=db.execute('SELECT payload FROM m3_memory_history WHERE npc=? ORDER BY id DESC LIMIT 1',
+                                (name,)).fetchone()
+            if previous:
+                old=json.loads(previous[0])
+                old_signature=json.dumps({section:[{k:v for k,v in item.items() if k!='strength'}
+                                                   for item in old[section]]
+                                          for section in ('active','forgotten','reflections')},
+                                         sort_keys=True,ensure_ascii=False)
+                if signature==old_signature:return
             db.execute('INSERT INTO m3_memory_history(npc,game_time,payload) VALUES(?,?,?)',
                        (name,self.world.clock.now,json.dumps(panel,ensure_ascii=False)))
+            self._prune_memory_history(db,name)
+
+    @staticmethod
+    def _prune_memory_history(db,name):
+        threshold=db.execute('SELECT id FROM m3_memory_history WHERE npc=? ORDER BY id DESC LIMIT 1 OFFSET ?',
+                             (name,SOCIAL.memory_history_limit)).fetchone()
+        if threshold:db.execute('DELETE FROM m3_memory_history WHERE npc=? AND id<=?',(name,threshold[0]))
 
     def world_snapshot(self):
         with self.lock:
@@ -359,6 +417,9 @@ class SocialService(GameService):
             for name,npc in result['npcs'].items():
                 npc['busy']=name in self.busy or name in self.reflecting or name in self.reading or name in self.reading_waiting
                 npc['activity']=self.planner.describe(name)
+                if self.player.engaged_npc==name:
+                    npc['activity'].update(title='与玩家交谈',source='player',state='active',state_label='交谈中',
+                        reason='玩家主动发起交流',detail='等待玩家输入或回复，完成后继续原来的安排')
                 if self.player.pending_npc==name:
                     npc['activity'].update(title='与玩家交谈',source='player',state='active',state_label='交谈中',
                         reason='玩家主动发起交流',detail='正在回复，完成后继续原来的安排')

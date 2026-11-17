@@ -21,3 +21,7 @@ langgraph-checkpoint==4.3.1
 langchain-core==1.8.0
 websockets==17.4
 httpx==0.28.1
+
+# LangGraph/LangSmith 的原生扩展；本项目的 Windows 环境已验证可加载。
+xxhash==3.5.0
+ormsgpack==1.12.0

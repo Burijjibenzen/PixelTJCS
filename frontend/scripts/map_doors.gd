@@ -53,8 +53,12 @@ func set_open(id: String, opened: bool) -> void:
 	else:
 		_open.erase(id)
 
-func update_for_npcs(npcs: Array[NPC], map_id: String) -> void:
+func update_for_npcs(npcs: Array[NPC], map_id: String, player_cell: Vector2i = Vector2i(-1, -1)) -> void:
 	var needed := {}
+	if player_cell.x >= 0:
+		for passage: Vector2i in _passage_at:
+			if abs(player_cell.x - passage.x) + abs(player_cell.y - passage.y) <= 2:
+				needed[_passage_at[passage]] = true
 	for npc: NPC in npcs:
 		if npc.map_id != map_id:
 			continue

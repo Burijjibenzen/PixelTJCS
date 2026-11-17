@@ -15,8 +15,9 @@ NPC 在里面自主对话、积累记忆、互相遗忘、发展关系。
 - 🧠 **自研记忆系统**：向量检索（新近度×重要性×相关度三因子打分）
 - 🫥 **可视化遗忘**：时间衰减 / 容量淘汰 / 反思压缩三机制，全部留痕可查询
 - ❤️ **关系网络**：每次对话后 LLM 评估好感度变化（带原因）
-- ⏩ **连续快进**：保留原版后端现实 1 秒 = 游戏 10 分钟；1小时/4小时/3天快进连续运行、自动恢复原速，时钟、移动与动画同步加速。对话恢复原版即时替换，气泡不占用人物
+- ⏩ **连续快进**：保留原版后端现实 1 秒 = 游戏 10 分钟；1小时/4小时/3天快进连续运行、自动恢复原速，时钟、移动与动画同步加速。新台词即时替换；最后一句最多让 NPC 停留 3 现实秒，离开前收起气泡
 - 🗺️ **校园寻路**：10 个 NPC 在三张楼层图的 40 个区域间活动，按实际地板和障碍物寻路。运行 Godot 主场景，按 1、2、3 切换观察楼层，空格跟随 NPC，V 查看分区和当前行走目标。
+- 🚶 **可行走玩家**：默认关闭；加入后在主地图用 WASD／方向键行走，靠近 NPC 按 E 交谈，楼梯旁按 E 换层，P 回到自己；右上角可查看核心机制说明。
 
 ## 快速开始
 
@@ -27,13 +28,22 @@ copy .env.example .env       # 填入你的 API key
 python scripts/run_demo.py   # 命令行演示（答辩入口）
 uvicorn backend.api:app --port 8000   # HTTP 接口（文档在 /docs）
 
-# 5) 跑 Godot 前端（M2.2，可独立运行，也可接后端）
+# 5) 跑 Godot 前端（可独立观察 NPC；玩家聊天需连接后端）
 #    ① 下载 Godot 4.5.2 stable 标准版（不是 .NET 版）: godotengine.org/download/archive/
 #    ② 双击 exe（绿色免安装）→ 项目管理器选"导入" → frontend/project.godot
 #    ③ 编辑器里按 F5 运行（详细说明与排错见 docs/CODE_GUIDE.md §7）
 #    ④ 双端联调: 终端 A 先起 uvicorn backend.api:app --port 8000，再 F5 →
 #       左上角显示"后端驱动" = NPC 按后端日程移动；
 #       后端不在线时前端自动回退本地演示日程，永不白屏
+#    ⑤ 玩家模式：点击顶部按钮加入；WASD/方向键行走，E 近距离交谈/换层，P 回到自己
+```
+
+Windows PowerShell 建议用 Python 3.11 的独立环境安装；若系统默认 GBK 编码，`-X utf8` 可正常读取依赖文件中的中文注释：
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -X utf8 -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -X utf8 -m uvicorn backend.api:app --host 127.0.0.1 --port 8000
 ```
 
 ## 文档
@@ -43,6 +53,8 @@ uvicorn backend.api:app --port 8000   # HTTP 接口（文档在 /docs）
 | [docs/CODE_GUIDE.md](docs/CODE_GUIDE.md) | **交接必读**：代码结构/机制详解/扩展指南 |
 | [docs/M3.md](docs/M3.md) | NPC调度、LangGraph对话、事件流与社交观察基础 |
 | [docs/M4.1.md](docs/M4.1.md) | 时间/观察修正、公开资料、动态日程、公告栏、玩家会话 |
+| [docs/M4.2.md](docs/M4.2.md) | 玩家行走与近距离交互、运行边界、验收记录 |
+| [docs/HANDOFF.md](docs/HANDOFF.md) | 当前完成状态、待验收事项、启动和交付步骤 |
 | [校园地图改图交接](map_sources/README.md) | 三份可编辑源图、障碍与装饰划分、在线改图及 Godot 重建步骤 |
 | [docs/MAP_SPEC.md](docs/MAP_SPEC.md) | 地图格式、图层约定和早期实现记录 |
 | [docs/DESIGN.md](docs/DESIGN.md) | 需求与设计方案（FR/架构/里程碑） |
@@ -61,5 +73,7 @@ Python 3.11 · FastAPI · SQLite（记忆/关系持久化） · 同济 AGI 网�
 - [x] M2.2: 前端↔后端联动 —— `/world` 驱动 NPC 移动 + 到达位置上报 + 断线自动回退本地日程（当前）
 - [x] M3: 调度器（相遇自动触发对话）+ 八卦传播 + 对话气泡/记忆面板/关系面板 UI
 - [x] M4.1：公开资料与动态日程 + 公告栏功能 + 默认关闭的玩家入口（现仅支持文字交互）
-- [ ] M4.2：完整玩家模式（默认关闭，interrupt 开关）+ 跨楼层 + 完整演示打磨
+- [x] M4.2 实现：默认关闭的可行走玩家 + 近距离交互 + 跨楼层 + 游戏内机制说明 + 真实模型联通
+- [ ] M4.2 可见窗口人工验收：行走手感、楼梯选择、近距离对话与离开重入
+- [ ] 可选增强：玩家中断 NPC 对话的开关（不影响 M4.2 核心演示）
 

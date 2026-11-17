@@ -7,7 +7,7 @@ signal floor_changed(npc)
 enum S { IDLE, WANDER, WALK }
 const SPEED := 55.0
 
-# 后端实际处理对话时暂停移动；气泡显示不影响人物行为。
+# 后端处理与短暂离场停留期间暂停移动；气泡结束事件先于恢复行走。
 var social_busy := false
 
 var npc_id := ""

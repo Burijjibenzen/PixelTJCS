@@ -476,15 +476,45 @@ class SocialTests(unittest.TestCase):
             self.assertAlmostEqual(486,self.s.world.clock.now)
         finally:self.s.clock_sample=None
 
-    def test_burst_dialogue_replaces_current_line_without_holding_actors(self):
+    def test_burst_dialogue_clears_final_bubble_before_releasing_actors(self):
         result=self.s.run_conversation(self.a,self.b,'恢复原版显示节奏')
         run_id=result['conversation_id']
         latest=self.s.live_lines[run_id]['data']
         self.assertEqual(6,latest['sequence'])
         self.assertEqual([10],[part['seconds'] for part in latest['segments']])
+        self.assertTrue(self.s.live_lines[run_id]['finished'])
+        self.assertFalse(any(line['conversation_id']==run_id for line in self.s.live_dialogue()))
+        self.assertEqual(1,len([e for e in self.s.bus.history() if e['kind']=='dialogue_finished' and e['conversation_id']==run_id]))
         self.assertFalse(self.s.busy)
-        # 气泡仍在显示时，可以安排同一人物参与另一场对话。
+        # 地图气泡已结束；完整台词仍可从历史查询，同一人物可以参与下一场。
         self.assertIsNotNone(self.s.run_conversation(self.a,self.c,'继续原有社交行为'))
+        self.assertFalse(self.s.busy)
+
+    def test_final_bubble_hold_is_bounded_and_only_for_observers(self):
+        key='visual-hold-test'
+        self.s.live_lines[key]=dict(start=time.monotonic(),end=time.monotonic()+30)
+        with patch('backend.social.time.sleep') as sleep:
+            self.s._hold_final_bubble(key)
+            sleep.assert_not_called()
+            subscriber=object()
+            self.s.bus.clients[subscriber]=None
+            try:
+                self.s._hold_final_bubble(key)
+                self.assertEqual(1,sleep.call_count)
+                self.assertGreater(sleep.call_args.args[0],0)
+                self.assertLessEqual(sleep.call_args.args[0],SOCIAL.bubble_exit_hold_seconds)
+            finally:self.s.bus.clients.pop(subscriber,None)
+
+    def test_visual_end_event_is_published_before_actor_release(self):
+        original=self.s.emit
+        busy_at_end=[]
+        def observe(kind,**data):
+            if kind=='dialogue_finished':busy_at_end.append(set(self.s.busy))
+            return original(kind,**data)
+        with patch.object(self.s,'emit',side_effect=observe):
+            self.s.run_conversation(self.a,self.b,'验证气泡先于离场清除')
+        self.assertEqual(1,len(busy_at_end))
+        self.assertTrue({self.a,self.b}.issubset(busy_at_end[0]))
         self.assertFalse(self.s.busy)
 
     def test_live_dialogue_reconnect_restores_latest_line_and_deduplicates(self):

@@ -1,12 +1,17 @@
 """单机玩家身份与异步对话。模型处理不占世界锁，不把玩家注册为NPC。"""
 import json
+import secrets
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 from pydantic import BaseModel, Field
 from backend.config import PLAYER
+from backend.config import SOCIAL
+from backend.world import AREAS, ROOMS
 
+_INTERNAL_STATE = object()
 
 class PlayerError(ValueError):
     def __init__(self, status, message):
@@ -25,17 +30,23 @@ class PlayerMode:
         self.session = None  # 服务每次启动默认关闭；身份、历史和记忆仍在数据库中。
         self.pending = None
         self.pending_npc = None
+        self.engaged_npc = None
+        self.engaged_until = 0.0
+        self.last_dialogue_id = None
+        self.position = None
         self.closed = False
         self.jobs = {}
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='player-chat')
         with self.database() as db:
             db.executescript('''
-                CREATE TABLE IF NOT EXISTS player_profiles(id TEXT PRIMARY KEY,name TEXT UNIQUE NOT NULL);
+                CREATE TABLE IF NOT EXISTS player_profiles(id TEXT PRIMARY KEY,name TEXT UNIQUE NOT NULL,token TEXT);
                 CREATE TABLE IF NOT EXISTS player_sessions(id TEXT PRIMARY KEY,player TEXT NOT NULL,state TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS player_turns(id TEXT PRIMARY KEY,session TEXT NOT NULL,
                     request_id TEXT NOT NULL,npc TEXT NOT NULL,message TEXT NOT NULL,payload TEXT NOT NULL,
                     UNIQUE(session,request_id));
             ''')
+            if 'token' not in {column[1] for column in db.execute('PRAGMA table_info(player_profiles)')}:
+                db.execute('ALTER TABLE player_profiles ADD COLUMN token TEXT')
             db.execute("UPDATE player_sessions SET state='left' WHERE state='active'")
             for turn_id, raw in db.execute('SELECT id,payload FROM player_turns').fetchall():
                 item = json.loads(raw)
@@ -68,15 +79,18 @@ class PlayerMode:
         if not self.session or session_id != self.session['id']:raise PlayerError(409, '玩家模式未开启或会话已失效，请重新加入')
         return self.session
 
-    def state(self):
+    def state(self, session_id=_INTERNAL_STATE):
         with self.s.lock:
             active = self.session
-            return dict(enabled=bool(active), session_id=active['id'] if active else None,
-                player=dict(active['player']) if active else None, pending_turn=self.pending, pending_npc=self.pending_npc,
+            owner = bool(active and (session_id is _INTERNAL_STATE or session_id == active['id']))
+            return dict(enabled=bool(active), session_id=active['id'] if owner else None,
+                player=dict(active['player']) if owner else None,
+                pending_turn=self.pending if owner else None, pending_npc=self.pending_npc if owner else None,
+                engaged_npc=self.engaged_npc if owner else None,
                 relations=[dict(npc=n, score=self.s.relations.get(active['player']['id'], n),
-                    reason=self.s.relations.last_reason(active['player']['id'], n)) for n in self.s.npcs] if active else [])
+                    reason=self.s.relations.last_reason(active['player']['id'], n)) for n in self.s.npcs] if owner else [])
 
-    def join(self, name='玩家'):
+    def join(self, name='玩家', session_id=None, player_token=None):
         name = name.strip()
         if not name or len(name) > PLAYER.name_max_chars or any(ord(c) < 32 for c in name):raise PlayerError(400, '请填写1至24字的玩家称呼')
         if name in self.s.npcs or name.startswith('player:'):raise PlayerError(400, '玩家称呼不能与NPC重名或使用内部身份前缀')
@@ -84,26 +98,99 @@ class PlayerMode:
             if self.closed:raise PlayerError(503, '服务正在关闭')
             if self.session:
                 if self.session['player']['name'] != name:raise PlayerError(409, '已有玩家加入，请先离开再更换身份')
-                return self.state()
+                if session_id != self.session['id']:
+                    saved_token = self._token(self.session['player']['id'])
+                    if not saved_token or not player_token or not secrets.compare_digest(saved_token, player_token):
+                        raise PlayerError(409, '该玩家会话已开启，请使用原会话或身份凭据继续')
+                return dict(self.state(self.session['id']),player_token=self._token(self.session['player']['id']))
             if self.pending:raise PlayerError(409, '上一轮对话仍在处理，结束后可重新加入')
             with self.database() as db:
-                row = db.execute('SELECT id FROM player_profiles WHERE name=?', (name,)).fetchone()
+                row = db.execute('SELECT id,token FROM player_profiles WHERE name=?', (name,)).fetchone()
+                if row and row[1] and not secrets.compare_digest(row[1],player_token or ''):
+                    raise PlayerError(403, '该称呼已有身份，请使用原客户端保存的身份凭据')
                 player = dict(id=row[0] if row else 'player:'+uuid.uuid4().hex, name=name)
-                if not row:db.execute('INSERT INTO player_profiles VALUES(?,?)', (player['id'], name))
+                token = (row[1] if row else None) or secrets.token_urlsafe(32)
+                if row and not row[1]:db.execute('UPDATE player_profiles SET token=? WHERE id=?',(token,player['id']))
+                if not row:db.execute('INSERT INTO player_profiles(id,name,token) VALUES(?,?,?)', (player['id'], name,token))
                 session_id = uuid.uuid4().hex
                 db.execute("INSERT INTO player_sessions VALUES(?,?,'active')", (session_id, player['id']))
             for npc in self.s.npcs:self.s.relations.set_initial(player['id'], npc, 50)
             self.session = dict(id=session_id, player=player)
-            return self.state()
+            self.position = None
+            return dict(self.state(session_id),player_token=token)
+
+    def _token(self, player_id):
+        with self.database() as db:
+            row=db.execute('SELECT token FROM player_profiles WHERE id=?',(player_id,)).fetchone()
+        return row[0] if row else None
 
     def leave(self, session_id):
         with self.s.lock:
             self._profile(session_id)
             if self.session and self.session['id'] != session_id:raise PlayerError(409, '旧会话不能关闭当前玩家模式')
+            self._release_engagement()
             with self.database() as db:db.execute("UPDATE player_sessions SET state='left' WHERE id=?", (session_id,))
             self.session = None
+            self.position = None
             # 已接受的一轮继续完成保存，不能在模型仍处理时提前释放NPC。
-            return self.state()
+            return self.state(session_id)
+
+    def _release_engagement(self):
+        npc = self.engaged_npc
+        last_dialogue_id = self.last_dialogue_id
+        self.engaged_npc = None
+        self.engaged_until = 0.0
+        self.last_dialogue_id = None
+        if npc and self.pending_npc != npc:self.s.busy.discard(npc)
+        if npc and last_dialogue_id:
+            self._emit('dialogue_finished',event_key=last_dialogue_id+':visual_end',
+                conversation_id=last_dialogue_id,participants=[npc])
+
+    def report_position(self, session_id, map_id, room_id, x, y):
+        with self.s.lock:
+            self._active(session_id)
+            room = ROOMS.get((map_id, room_id))
+            if room is None:raise PlayerError(400, '玩家位置不属于已知房间')
+            self.position = dict(area=room['id'], x=x, y=y, at=time.monotonic())
+            return dict(ok=True)
+
+    def _near(self, npc):
+        now = time.monotonic()
+        player = self.position
+        other = self.s.positions.get(npc)
+        area = AREAS[self.s.world.area_of(npc)]['id']
+        return bool(player and other and player['area'] == area == other['area']
+            and all(0 <= now - position['at'] <= SOCIAL.position_max_age_seconds
+                    for position in (player, other))
+            and ((player['x'] - other['x']) ** 2 + (player['y'] - other['y']) ** 2)
+                <= PLAYER.chat_radius ** 2)
+
+    def engage(self, session_id, npc):
+        with self.s.lock:
+            self._active(session_id)
+            if npc not in self.s.npcs:raise PlayerError(404, '角色不存在')
+            if self.s.paused:raise PlayerError(409, '世界暂停中，继续后再交谈')
+            if not self._near(npc):raise PlayerError(409, '请靠近角色，等待双方位置同步后再交谈')
+            if self.pending and self.pending_npc != npc:raise PlayerError(409, '上一轮对话仍在处理')
+            if self.engaged_npc != npc:
+                if not self.s.available(npc,npc):raise PlayerError(409, '对方正在处理其他事情，请稍后再试')
+                self._release_engagement()
+                self.engaged_npc = npc
+                self.s.busy.add(npc)
+            self.engaged_until = time.monotonic() + PLAYER.engage_lease_seconds
+            self._world_changed()
+            return self.state(session_id)
+
+    def disengage(self, session_id):
+        with self.s.lock:
+            self._active(session_id)
+            self._release_engagement()
+            self._world_changed()
+            return self.state(session_id)
+
+    def expire_engagement(self, now):
+        if self.engaged_npc and now >= self.engaged_until:
+            self._release_engagement()
 
     def _load(self, turn_id):
         with self.database() as db:row = db.execute('SELECT payload FROM player_turns WHERE id=?', (turn_id,)).fetchone()
@@ -148,9 +235,11 @@ class PlayerMode:
             if self.closed:raise PlayerError(503, '服务正在关闭')
             if npc not in self.s.npcs:raise PlayerError(404, '角色不存在')
             if getattr(self.s, 'paused', False):raise PlayerError(409, '世界暂停中，继续后再交谈')
+            if not self._near(npc):raise PlayerError(409, '请靠近角色，等待双方位置同步后再发送')
             if self.pending:raise PlayerError(409, '正在等待上一轮回复，请稍后再发送')
+            if self.engaged_npc and self.engaged_npc != npc:raise PlayerError(409, '请先结束当前角色的交谈')
             available = getattr(self.s, 'available', lambda a,b: a not in self.s.busy)
-            if not available(npc, npc):raise PlayerError(409, '对方正在交谈、阅读或整理思绪，请稍后再试')
+            if self.engaged_npc != npc and not available(npc, npc):raise PlayerError(409, '对方正在交谈、阅读或整理思绪，请稍后再试')
             if hasattr(self.s, 'sync_clock'):self.s.sync_clock()
             turn_id = uuid.uuid4().hex
             item = dict(id=turn_id, conversation_id=uuid.uuid5(uuid.NAMESPACE_URL, session_id+':'+npc).hex,
@@ -165,7 +254,8 @@ class PlayerMode:
             self.s.busy.add(npc)
             try:self.jobs[turn_id] = self.pool.submit(self._work, dict(item, memories={}, transcript=[]))
             except RuntimeError:
-                self.pending = None;self.pending_npc = None;self.s.busy.discard(npc)
+                self.pending = None;self.pending_npc = None
+                if self.engaged_npc != npc:self.s.busy.discard(npc)
                 item.update(status='failed', error='服务正在关闭，本轮未能开始');self._save(item)
                 raise PlayerError(503, item['error'])
             self._world_changed()
@@ -199,6 +289,8 @@ class PlayerMode:
             self._save(item)  # 台词先持久化，后续写记忆失败仍可查询已经发生的交流。
             self._emit('dialogue_line', event_key=turn_id+':npc', conversation_id=turn_id,
                 sequence=2, participants=[npc], speaker=npc, text=item['reply'], activity='player_chat')
+            with self.s.lock:
+                if self.engaged_npc == npc:self.last_dialogue_id = turn_id
             text = '\n'.join(t['speaker']+'：'+t['text'] for t in item['transcript'])
             for agent, other in ((npc, player['id']), (player['id'], npc)):
                 memory_id = f'player-chat:{turn_id}:{agent}'
@@ -225,7 +317,11 @@ class PlayerMode:
             self._save(item)
         finally:
             with self.s.lock:
-                self.s.busy.discard(npc)
+                released = self.engaged_npc != npc
+                if released:
+                    self.s.busy.discard(npc)
+                    self._emit('dialogue_finished',event_key=turn_id+':visual_end',
+                        conversation_id=turn_id,participants=[npc])
                 if self.pending == turn_id:self.pending = None;self.pending_npc = None
                 self.jobs = {key:job for key,job in self.jobs.items() if not job.done()}
                 self._world_changed()

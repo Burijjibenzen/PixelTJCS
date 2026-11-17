@@ -74,11 +74,12 @@ class Scheduler:
     def tick(self,now,elapsed=0):
         s=self.s
         with s.lock:
+            s.player.expire_engagement(now)
             if s.clock_sample is None:s.step_clock(elapsed)
             else:s.sync_clock(now)
             # 只清理过期显示数据，气泡生命周期不参与角色占用。
             for key,playback in list(s.live_lines.items()):
-                if playback['end']<=now:
+                if playback['end']<=now or playback.get('finished'):
                     del s.live_lines[key]
                     s.emit('conversation_released',conversation_id=key,participants=playback['participants'])
             self.jobs={p:f for p,f in self.jobs.items() if not f.done()}
@@ -92,7 +93,7 @@ class Scheduler:
                     s.maintenance_due=False
                     s.future=self.maintenance.submit(s.maintain)
         # 快照推送不能等待模型；也不在 async WebSocket 线程内执行数据库操作。
-        if now-self.last_snapshot>=1:
+        if not s.paused and now-self.last_snapshot>=1:
             self.last_snapshot=now
             s.emit('world',snapshot=s.world_snapshot())
 
@@ -100,12 +101,13 @@ class Scheduler:
         s=self.s;claimed=set()
         for m in s.active_meetings():
             if m['state'] not in ('talking','deciding') and any(s.planner.manual(n) for n in (m['a'],m['b'])):
-                m.update(state='waiting',detail='等待手动指派行程完成');continue
+                self._wait_meeting(m,elapsed,'等待手动指派行程完成');continue
             pair={m['a'],m['b']};conflict=bool(pair&claimed);claimed.update(pair)
             if m['state'] in ('talking','deciding'):
                 continue
             if conflict or not s.available(*pair):
-                m.update(state='waiting',detail='等待前序会面或角色空闲');continue
+                self._wait_meeting(m,elapsed,'等待前序会面或角色空闲');continue
+            m['wait_seconds']=0.0
             if m['area'] is None:
                 m['area']=AREAS[s.world.area_of(m['a'])]['id']
             online=all(now-s.seen.get(n,-100)<SOCIAL.presence_seconds for n in pair)
@@ -121,6 +123,14 @@ class Scheduler:
             if len(s.busy)>=SOCIAL.max_conversations*2:
                 m.update(state='ready',detail='等待对话名额');continue
             self.submit(m['a'],m['b'],m['trigger'],m)
+
+    def _wait_meeting(self, meeting, elapsed, detail):
+        waiting = meeting.get('wait_seconds', 0.0) + max(0.0, elapsed)
+        meeting['wait_seconds'] = waiting
+        if waiting >= SOCIAL.meeting_wait_timeout:
+            meeting.update(state='failed', detail='等待对方空闲超时，已取消本次会面')
+        else:
+            meeting.update(state='waiting', detail=detail)
 
     def probability(self,a,b):
         # 好感度0/50/100对应基础概率的0.5/1/1.5倍；规则筛选后模型仍可拒聊。

@@ -8,12 +8,19 @@ from contextlib import closing
 
 
 class EventStream:
-    def __init__(self, db_path, queue_size=256):
+    def __init__(self, db_path, queue_size=256, history_limit=5000):
         self.db_path, self.queue_size = db_path, queue_size
+        self.history_limit = history_limit
         self.lock = threading.RLock()
         self.clients = {}
         with self.db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS m3_events (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, payload TEXT, created REAL, event_key TEXT UNIQUE)")
+            self._prune(db)
+            db.commit()
+
+    def _prune(self, db):
+        db.execute('DELETE FROM m3_events WHERE id <= (SELECT COALESCE(MAX(id),0)-? FROM m3_events)',
+                   (self.history_limit,))
 
     def db(self):
         return closing(sqlite3.connect(self.db_path, timeout=10))
@@ -27,6 +34,8 @@ class EventStream:
             created = time.time()
             cursor = db.execute("INSERT INTO m3_events(kind,payload,created,event_key) VALUES(?,?,?,?)",
                                 (kind, json.dumps(payload, ensure_ascii=False), created, event_key))
+            if cursor.lastrowid % 100 == 0:
+                self._prune(db)
             db.commit()
             event = dict(id=cursor.lastrowid, kind=kind, created=created, **payload)
             for queue, loop in list(self.clients.items()):

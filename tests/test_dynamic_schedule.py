@@ -189,10 +189,10 @@ class DynamicScheduleTests(unittest.TestCase):
         p=self.s.planner;p.ensure_day(self.a)
         future=Future();context=p.context(self.a)
         p.job=dict(future=future,npc=self.a,day=p.day,start=0,expired=False,context=context)
-        p._poll_model(20)
+        p._poll_model(ACTIVITY.model_result_deadline_seconds + 1)
         self.assertTrue(p.job['expired'])
         future.set_result({'activities':[dict(kind='library',area=f'{ZX2}/zx2_lib',start_minute=900)]})
-        p._poll_model(21)
+        p._poll_model(ACTIVITY.model_result_deadline_seconds + 2)
         self.assertIsNone(p.job)
         self.assertFalse(any(a['source']=='model' for a in p.records.values()))
         self.assertTrue(any(a['source']=='rule' for a in p.records.values()))
@@ -206,7 +206,7 @@ class DynamicScheduleTests(unittest.TestCase):
         p=self.s.planner;future=Future()
         future.set_result({'activities':[dict(kind='library',area=f'{ZX2}/zx2_lib',start_minute=1000)]})
         p.job=dict(future=future,npc=self.a,day=p.day,start=0,expired=False,context=p.context(self.a))
-        p._poll_model(20)
+        p._poll_model(ACTIVITY.model_result_deadline_seconds + 1)
         self.assertFalse(any(a['source']=='model' for a in p.records.values()))
 
     def test_model_frequency_once_per_npc_day_and_one_global_request(self):

@@ -1,7 +1,7 @@
 extends CanvasLayer
 signal notice_board_requested(board_id: String)
 ## M3 独立观察界面：WebSocket 事件流、分组并发气泡、记忆/关系面板。
-# 原版节奏：新台词立即替换，每段最多显示十个现实秒；不限制人物行动。
+# 新台词立即替换，每段最多显示十个现实秒；对话结束事件会提前收起气泡。
 const BUBBLE_SECONDS := 10.0
 const SEGMENT_CHARS := 60
 var actors: Array = []
@@ -38,7 +38,7 @@ var paused := false
 var fetching := "memory"
 var panel_name := ""
 var bubble_labels := {}
-# 每场对话独立显示，显示计时不参与人物行为或角色占用。
+# 每场对话独立显示；结束事件先收起气泡，角色再恢复行动。
 var playbacks: Array = []
 # M3 修复：保存正在生成的最新一句，重连后恢复，完成事件不重复播整场。
 var live_versions := {}
@@ -422,6 +422,11 @@ func _accept_stream(message: Dictionary) -> void:
 			_append_dialogue(message)
 			if not message.get("replay", false):
 				_show_line(message)
+		"dialogue_finished":
+			for playback in playbacks.duplicate():
+				if playback.event.get("conversation_id", "") == message.get("conversation_id", ""):
+					playback.index = playback.event.result.transcript.size()
+					_advance_turn(playback)
 		"memory_changed", "relation_changed":
 			panel_timer = 0
 			_fetch_history()
@@ -433,7 +438,7 @@ func _accept_stream(message: Dictionary) -> void:
 					playback.index = playback.event.result.transcript.size()
 					_advance_turn(playback)
 			_notice(str(message.message))
-		# 角色任务完成与气泡显示分别处理，不因气泡而延迟后续行动。
+		# 对话日志保留完整台词；结束事件只收起地图上的气泡。
 
 # M3: 事件补发只补日志；地图仍按服务端活跃快照和实时台词显示，避免重演旧聊天。
 func _append_dialogue(line: Dictionary) -> void:

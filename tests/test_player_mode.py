@@ -8,15 +8,27 @@ from unittest.mock import patch
 
 import test_social as fixtures
 from backend.player_mode import PlayerError, PlayerMode, PlayerRelationImpact
+from backend.config import PLAYER, SOCIAL
+from backend.world import AREAS
 
 
 class PlayerModeTests(unittest.TestCase):
-    setUp = fixtures.SocialTests.setUp
     tearDown = fixtures.SocialTests.tearDown
     profile_client = fixtures.SocialTests.profile_client
 
+    def setUp(self):
+        fixtures.SocialTests.setUp(self)
+        room=AREAS[self.area]
+        for npc in self.s.npcs:
+            self.s.report_arrival(npc,map_id=room['map_id'],room_id=room['room_id'],x=0,y=0)
+
     def join(self, name='访客甲'):
-        return self.s.player.join(name)['session_id']
+        if not hasattr(self,'tokens'):self.tokens={}
+        result=self.s.player.join(name,player_token=self.tokens.get(name))
+        self.tokens[name]=result['player_token']
+        room=AREAS[self.area]
+        self.s.player.report_position(result['session_id'],room['map_id'],room['room_id'],0,0)
+        return result['session_id']
 
     def send(self, message='一起讨论研究计划吧', npc=None, session=None, request='first'):
         session = session or self.s.player.state()['session_id']
@@ -30,7 +42,9 @@ class PlayerModeTests(unittest.TestCase):
         with self.assertRaises(PlayerError):self.s.chat_with_npc(self.a, '你好')
         original = dict(self.s.world.npc_area)
         session = self.join()
-        self.assertEqual(session, self.join())
+        self.assertEqual(session, self.s.player.join('访客甲', session)['session_id'])
+        self.assertEqual(session,self.join())
+        with self.assertRaises(PlayerError):self.s.player.join('访客甲')
         self.assertEqual(10, len(self.s.npcs))
         self.assertEqual(original, self.s.world.npc_area)
         self.assertEqual(10, len(self.s.player.state()['relations']))
@@ -39,6 +53,86 @@ class PlayerModeTests(unittest.TestCase):
         self.assertFalse(self.s.player.leave(session)['enabled'])
         with self.assertRaises(PlayerError):self.join(self.a)
         with self.assertRaises(PlayerError):self.join(' \n ')
+
+    def test_engagement_holds_npc_through_reply_and_releases_on_close(self):
+        session=self.join()
+        state=self.s.player.engage(session,self.a)
+        self.assertEqual(self.a,state['engaged_npc'])
+        self.assertFalse(self.s.available(self.a,self.b))
+        self.assertTrue(self.s.world_snapshot()['npcs'][self.a]['busy'])
+        self.assertEqual('与玩家交谈',self.s.world_snapshot()['npcs'][self.a]['activity']['title'])
+        with patch.object(self.s.npcs[self.a],'speak',return_value='你好，我停下来聊聊。'):
+            turn=self.send(session=session)
+            self.assertEqual('completed',turn['status'])
+        self.assertFalse(self.s.available(self.a,self.b))
+        self.assertFalse(any(e['kind']=='dialogue_finished' and e['conversation_id']==turn['id']
+                             for e in self.s.bus.history()))
+        self.s.player.disengage(session)
+        self.assertTrue(any(e['kind']=='dialogue_finished' and e['conversation_id']==turn['id']
+                            for e in self.s.bus.history()))
+        self.assertTrue(self.s.available(self.a,self.b))
+
+    def test_engagement_expires_after_abandoned_window(self):
+        session=self.join()
+        self.s.player.engage(session,self.a)
+        self.s.player.expire_engagement(time.monotonic()+PLAYER.engage_lease_seconds+1)
+        self.assertIsNone(self.s.player.state()['engaged_npc'])
+        self.assertTrue(self.s.available(self.a,self.b))
+
+    def test_server_checks_fresh_player_and_npc_distance_for_engage_and_chat(self):
+        session=self.join()
+        room=AREAS[self.area]
+        self.s.player.report_position(session,room['map_id'],room['room_id'],1000,1000)
+        with self.assertRaises(PlayerError):self.s.player.engage(session,self.a)
+        with self.assertRaises(PlayerError):self.s.player.submit(session,self.a,'远处消息','far')
+        self.s.player.report_position(session,room['map_id'],room['room_id'],0,0)
+        self.s.positions[self.a]['at']=time.monotonic()-SOCIAL.position_max_age_seconds-1
+        with self.assertRaises(PlayerError):self.s.player.engage(session,self.a)
+        self.s.report_arrival(self.a,map_id=room['map_id'],room_id=room['room_id'],x=0,y=0)
+        self.s.player.engage(session,self.a)
+        self.s.player.position['at']=time.monotonic()-SOCIAL.position_max_age_seconds-1
+        with self.assertRaises(PlayerError):self.s.player.submit(session,self.a,'过期消息','stale')
+
+    def test_rejected_chat_job_keeps_existing_engagement(self):
+        session=self.join()
+        self.s.player.engage(session,self.a)
+        with patch.object(self.s.player.pool,'submit',side_effect=RuntimeError('closed')):
+            with self.assertRaises(PlayerError) as error:
+                self.s.player.submit(session,self.a,'你好','rejected')
+        self.assertEqual(503,error.exception.status)
+        self.assertEqual(self.a,self.s.player.state(session)['engaged_npc'])
+        self.assertIn(self.a,self.s.busy)
+        self.assertFalse(self.s.available(self.a,self.b))
+        self.s.player.disengage(session)
+        self.assertTrue(self.s.available(self.a,self.b))
+
+    def test_player_engagement_waits_existing_npc_meeting_then_resumes(self):
+        session=self.join()
+        destination=next(area for area in AREAS if AREAS[area]['id'] != AREAS[self.area]['id'])
+        meeting=self.s.request_meeting(self.a,self.b,destination)
+        self.s.scheduler.meetings(time.monotonic(),1)
+        self.assertEqual('moving',meeting['state'])
+        target=meeting['area']
+        self.s.player.engage(session,self.a)
+        elapsed=meeting['travel_seconds']
+        self.s.scheduler.meetings(time.monotonic(),10)
+        self.assertEqual('waiting',meeting['state'])
+        self.assertEqual(target,meeting['area'])
+        self.assertEqual(elapsed,meeting['travel_seconds'])
+        self.s.player.disengage(session)
+        self.s.scheduler.meetings(time.monotonic(),1)
+        self.assertEqual('moving',meeting['state'])
+
+    def test_waiting_meeting_expires_instead_of_blocking_queue_forever(self):
+        session=self.join()
+        meeting=self.s.request_meeting(self.a,self.b)
+        self.s.player.engage(session,self.a)
+        self.s.scheduler.meetings(time.monotonic(),SOCIAL.meeting_wait_timeout-1)
+        self.assertEqual('waiting',meeting['state'])
+        self.s.scheduler.meetings(time.monotonic(),2)
+        self.assertEqual('failed',meeting['state'])
+        self.assertNotIn(meeting,self.s.active_meetings())
+        self.assertIn(self.a,self.s.busy)
 
     def test_full_transcript_in_both_personal_memories_and_only_participants_know(self):
         session = self.join();player = self.s.player.state()['player']
@@ -79,6 +173,8 @@ class PlayerModeTests(unittest.TestCase):
         impact = PlayerRelationImpact(delta=3, reason='认真回应了研究建议')
         with patch.object(self.s.llm, 'chat_json', return_value=impact), patch.object(self.s.npcs[self.a], 'speak', return_value='好建议') as speak:
             first = self.send(session=session)
+            room=AREAS[self.area]
+            self.s.player.report_position(session,room['map_id'],room['room_id'],1000,1000)
             second = self.send(session=session)
             self.assertEqual(first, second)
             self.assertEqual(1, speak.call_count)
@@ -221,7 +317,23 @@ class PlayerModeTests(unittest.TestCase):
                 self.assertEqual(409,client.post('/chat',json={'npc':self.a,'message':'你好'}).status_code)
                 self.assertEqual(400,client.post('/player/join',json={'name':self.a}).status_code)
                 self.assertEqual(422,client.post('/player/join',json={'name':'名'*25}).status_code)
-                session = client.post('/player/join',json={'name':'测试访客'}).json()['session_id']
+                joined = client.post('/player/join',json={'name':'测试访客'}).json()
+                session = joined['session_id']
+                room=AREAS[self.area]
+                position=dict(session_id=session,map_id=room['map_id'],room_id=room['room_id'],x=0,y=0)
+                self.assertEqual(409,client.post('/player/engage',json={'session_id':session,'npc':self.a}).status_code)
+                self.assertEqual(409,client.post('/player/chat',json=dict(session_id=session,npc=self.a,
+                    message='没有位置',request_id='no-position')).status_code)
+                self.assertEqual(400,client.post('/player/position',json=dict(position,room_id='不存在')).status_code)
+                self.assertEqual(200,client.post('/player/position',json=position).status_code)
+                self.assertIsNone(client.get('/player').json()['session_id'])
+                self.assertIsNone(client.get('/player').json()['player'])
+                self.assertEqual(session, client.get('/player',headers={'X-Player-Session':session}).json()['session_id'])
+                self.assertEqual(409,client.post('/player/join',json={'name':'测试访客'}).status_code)
+                self.assertEqual(session,client.post('/player/join',json={'name':'测试访客',
+                    'player_token':joined['player_token']}).json()['session_id'])
+                self.assertEqual(self.a,client.post('/player/engage',json={'session_id':session,
+                    'npc':self.a}).json()['engaged_npc'])
                 payload = dict(session_id=session,npc=self.a,message='接口你好',request_id='http')
                 self.assertEqual(422,client.post('/player/chat',json=dict(payload,message='字'*501)).status_code)
                 self.assertEqual(400,client.post('/player/chat',json=dict(payload,message=' ')).status_code)
@@ -241,7 +353,11 @@ class PlayerModeTests(unittest.TestCase):
                 legacy = client.post('/chat',json=dict(payload,request_id='legacy')).json()
                 self.assertEqual('completed',legacy['status'])
                 self.assertTrue(legacy['reply'])
+                self.assertIsNone(client.post('/player/disengage',json={'session_id':session}).json()['engaged_npc'])
                 self.assertFalse(client.post('/player/leave',json={'session_id':session}).json()['enabled'])
+                self.assertEqual(403,client.post('/player/join',json={'name':'测试访客'}).status_code)
+                self.assertEqual(200,client.post('/player/join',json={'name':'测试访客',
+                    'player_token':joined['player_token']}).status_code)
         finally:release.set()
 
 

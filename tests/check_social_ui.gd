@@ -59,7 +59,16 @@ func verify() -> void:
 	if not check(is_equal_approx(playback.remaining, remaining - 1.0), "fast forward does not shorten reading time"): return
 	ui._tick_playbacks(9.0)
 	if not check(not ui.bubble_labels["B"].visible, "bubble expires after ten real seconds"): return
-	ui._accept_stream(dict_replay(first, 6))
+	var final_line := next_line.duplicate(true)
+	final_line.id = 6
+	final_line.sequence = 1
+	final_line.conversation_id = "depart"
+	final_line.text = "临别前还有很长的话。".repeat(20)
+	ui._accept_stream(final_line)
+	if not check(ui.bubble_labels["B"].visible, "final line appears before release"): return
+	ui._accept_stream({"kind": "dialogue_finished", "id": 7, "conversation_id": "depart"})
+	if not check(not ui.bubble_labels["B"].visible and not ui.playbacks.any(func(p): return p.event.conversation_id == "depart"), "departure clears only finished conversation bubble"): return
+	ui._accept_stream(dict_replay(first, 8))
 	if not check(not ui.bubble_labels["A"].visible, "history replay does not replay expired bubbles"): return
 	# 重连只恢复最新一句当前段落，不重播旧句。
 	var restore := first.duplicate(true)
@@ -70,9 +79,9 @@ func verify() -> void:
 	ui._show_line(restore)
 	playback = ui.playbacks.back()
 	if not check(ui.bubble_labels["A"].get_node("Text").text == "正在阅读" and is_equal_approx(playback.remaining, 8.0), "reconnect restores current segment"): return
-	ui._accept_stream({"kind": "error", "id": 7, "conversation_id": "one", "message": "旧错误", "replay": true})
+	ui._accept_stream({"kind": "error", "id": 9, "conversation_id": "one", "message": "旧错误", "replay": true})
 	if not check(ui.bubble_labels["A"].visible, "replayed old error cannot cancel restored dialogue"): return
-	ui._accept_stream({"kind": "error", "id": 8, "conversation_id": "one", "message": "测试取消"})
+	ui._accept_stream({"kind": "error", "id": 10, "conversation_id": "one", "message": "测试取消"})
 	if not check(not ui.bubble_labels["A"].visible, "error clears only affected display"): return
 	ui._draw_relations([{"a": "A", "b": "B", "score": 70, "level": "好朋友", "reason": "帮助实验", "delta": 3}])
 	if not check(ui.relation_grid.get_child_count() == 25, "relation matrix"): return
@@ -101,7 +110,7 @@ func verify() -> void:
 	var bubble = ui.bubble_labels["C"]
 	if not check(bubble.position.y + bubble.size.y <= -88, "bubble above head"): return
 	if not check(ui.panel.position.y + ui.panel.size.y <= 720, "panel fits viewport"): return
-	print("PASS: original immediate replacement, ten-second display, reconnect, concurrent bubbles, dedup, history, matrix, layout")
+	print("PASS: bounded departure bubbles, immediate replacement, reconnect, concurrent bubbles, dedup, history, matrix, layout")
 	quit(0)
 func dict_replay(event: Dictionary, id: int) -> Dictionary:
 	var copy := event.duplicate(true)

@@ -13,6 +13,9 @@ var _dbg_prev := false
 var social_ui
 var notice_ui
 var player_ui
+var player_avatar: PlayerAvatar
+var stair_menu: PopupMenu
+var stair_options: Array = []
 
 @onready var camera := $Cam
 @onready var floor_picker: OptionButton = $UI/FloorPicker
@@ -55,6 +58,18 @@ func _ready() -> void:
 	player_ui = load("res://scripts/player_chat.gd").new()
 	player_ui.setup(npcs)
 	add_child(player_ui)
+	player_avatar = load("res://scripts/player_avatar.gd").new()
+	$Actors.add_child(player_avatar)
+	player_avatar.global_position = Game.nav_world_of("R01", Game.FLOOR3)
+	player_avatar.visible = false
+	player_ui.player_avatar = player_avatar
+	player_ui.near_checker = Callable(self, "_near_npc")
+	stair_menu = PopupMenu.new()
+	add_child(stair_menu)
+	stair_menu.id_pressed.connect(_choose_player_stair)
+	var mechanics = load("res://scripts/mechanics_panel.gd").new()
+	mechanics.name = "MechanicsPanel"
+	add_child(mechanics)
 	ApiClient.setup(npcs)
 	ApiClient.online_changed.connect(_on_online_changed)
 	$UI/BtnAdv1h.pressed.connect(func() -> void: ApiClient.advance_time(60))
@@ -68,9 +83,24 @@ func _ready() -> void:
 
 func _physics_process(_delta: float) -> void:
 	for map_id: String in floor_doors:
-		floor_doors[map_id].update_for_npcs(npcs, map_id)
+		var player_cell := Game.cell_of(player_avatar.global_position, map_id) if player_avatar.visible and player_avatar.map_id == map_id else Vector2i(-1, -1)
+		floor_doors[map_id].update_for_npcs(npcs, map_id, player_cell)
+	if player_avatar.visible and current_map == player_avatar.map_id and not $MapBrowser.visible and not player_ui.window.visible:
+		var focus := get_viewport().gui_get_focus_owner()
+		if not (focus is LineEdit or focus is TextEdit) and player_avatar.walk(_delta):
+			camera.set_target(player_avatar)
 
 func _process(delta: float) -> void:
+	if player_avatar.visible != player_ui.active:
+		player_avatar.visible = player_ui.active
+		if player_avatar.visible:
+			_show_floor(player_avatar.map_id, player_avatar.global_position)
+			camera.set_target(player_avatar)
+			$UI/InfoLabel.text = "镜头跟随：你"
+			$UI/HintLabel.text = "WASD/方向键行走　E 交谈/楼梯　P 回到自己　点击人物看资料　机制说明在右上角"
+		else:
+			cancel_follow()
+			$UI/HintLabel.text = "点击人物：跟随/资料　1/2/3 切楼　方向键平移　滚轮缩放　空格切换　Esc 取消　V 分区"
 	var mode := "后端驱动" if ApiClient.backend_online else "本地演示"
 	var rate := "已暂停" if ApiClient.simulation_paused else "×%.0f" % ApiClient.time_scale()
 	$UI/ClockLabel.text = ApiClient.backend_time + " · " + mode + " " + rate
@@ -89,6 +119,18 @@ func _process(delta: float) -> void:
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
+		var focus := get_viewport().gui_get_focus_owner()
+		if focus is LineEdit or focus is TextEdit:return
+		if player_avatar.visible and event.keycode == KEY_E:
+			_interact_player()
+			get_viewport().set_input_as_handled()
+			return
+		if player_avatar.visible and event.keycode == KEY_P:
+			_show_floor(player_avatar.map_id, player_avatar.global_position)
+			camera.set_target(player_avatar)
+			$UI/InfoLabel.text = "镜头跟随：你"
+			get_viewport().set_input_as_handled()
+			return
 		if event.keycode >= KEY_1 and event.keycode <= KEY_3:
 			_select_floor(event.keycode - KEY_1)
 			get_viewport().set_input_as_handled()
@@ -107,7 +149,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if picked != null:
 		follow_npc(picked)
 		social_ui.show_profile(picked.npc_name)
-		if player_ui.active:player_ui.open_for(picked.npc_name)
+		if player_ui.active and _near_npc(picked.npc_name):player_ui.open_for(picked.npc_name)
 		get_viewport().set_input_as_handled()
 		return
 	var world_point: Vector2 = get_global_transform_with_canvas().affine_inverse() * event.position
@@ -179,6 +221,50 @@ func _on_npc_arrived(npc: NPC) -> void:
 
 func _location_name(map_id: String, room_id: String) -> String:
 	return Game.map_name(map_id) + "·" + Game.room_name(room_id, map_id)
+
+func _near_npc(npc_name: String) -> bool:
+	if not player_avatar.visible:return false
+	var player_room := Game.room_id_at(player_avatar.global_position, player_avatar.map_id)
+	if player_room.is_empty():return false
+	for npc in npcs:
+		if npc.npc_name == npc_name and npc.map_id == player_avatar.map_id:
+			return player_room == Game.room_id_at(npc.global_position, npc.map_id) \
+				and player_avatar.global_position.distance_to(npc.global_position) <= 48.0
+	return false
+
+func _interact_player() -> void:
+	var nearest: NPC = null
+	var distance := 48.0
+	for npc in npcs:
+		if npc.map_id != player_avatar.map_id or not _near_npc(npc.npc_name):continue
+		var gap := player_avatar.global_position.distance_to(npc.global_position)
+		if gap < distance:nearest = npc;distance = gap
+	if nearest != null:
+		player_ui.open_for(nearest.npc_name)
+		return
+	var cell := Game.cell_of(player_avatar.global_position, player_avatar.map_id)
+	for stair: Dictionary in Game.floor_data[player_avatar.map_id].stairs.values():
+		var at := Game.stair_entry(player_avatar.map_id, str(stair.id))
+		if abs(cell.x - at.x) + abs(cell.y - at.y) > 2:continue
+		stair_options = Game.stair_destinations(player_avatar.map_id, str(stair.id))
+		if stair_options.size() == 1:_choose_player_stair(0)
+		elif stair_options.size() > 1:
+			stair_menu.clear()
+			for index in stair_options.size():
+				stair_menu.add_item("前往" + Game.map_name(stair_options[index].map_id), index)
+			stair_menu.position = Vector2i(get_viewport().get_mouse_position())
+			stair_menu.popup()
+		return
+	$UI/InfoLabel.text = "附近没有可交谈的角色或楼梯"
+
+func _choose_player_stair(index: int) -> void:
+	if index < 0 or index >= stair_options.size():return
+	var destination: Dictionary = stair_options[index]
+	player_avatar.map_id = destination.map_id
+	player_avatar.global_position = Game.world_of(destination.cell, destination.map_id)
+	_show_floor(destination.map_id, player_avatar.global_position)
+	camera.set_target(player_avatar)
+	$UI/InfoLabel.text = "你已到达" + Game.map_name(destination.map_id)
 
 # 随机演示只给空闲角色分配新目标，跨层行程会完整走完。
 func _random_schedule() -> void:

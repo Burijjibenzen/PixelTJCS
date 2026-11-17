@@ -89,12 +89,16 @@ class SocialConfig:
     position_report_seconds: float = 0.25
     position_max_age_seconds: float = 2.0  # 心跳不能延长坐标有效期。
     meeting_timeout: float = 300.0
+    meeting_wait_timeout: float = 300.0
     maintenance_minutes: float = 30.0
     bubble_seconds: float = 10.0  # 恢复原版：新台词立即替换，每段最多显示 10 现实秒。
     bubble_segment_chars: int = 60
+    bubble_exit_hold_seconds: float = 3.0  # 最后一句后至多停留片刻；完整台词在日志里。
     visit_relation: float = 80.0
     gossip_max_hops: int = 3
     websocket_queue: int = 256
+    event_history_limit: int = 5000
+    memory_history_limit: int = 200
 
 SOCIAL = SocialConfig()
 
@@ -115,8 +119,8 @@ class ActivityConfig:
     friend_threshold: float = 70.0
     model_enabled: bool = True
     model_interval_seconds: float = 8.0
-    model_timeout_seconds: float = 8.0
-    model_result_deadline_seconds: float = 12.0
+    model_timeout_seconds: float = 15.0
+    model_result_deadline_seconds: float = 20.0
     history_days: int = 3
 
 
@@ -148,6 +152,8 @@ class PlayerConfig:
     history_limit: int = 50
     memory_importance: float = 0.45
     relation_max_delta: float = 6.0
+    engage_lease_seconds: float = 45.0
+    chat_radius: float = 48.0
 
 
 PLAYER = PlayerConfig()

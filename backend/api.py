@@ -11,7 +11,7 @@
 from threading import Lock
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -42,7 +42,8 @@ def get_service() -> GameService:
 app = FastAPI(title="Roamchestra 校园多智能体交互系统", version="0.1.0")
 # 允许 Godot/浏览器跨域调试
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    CORSMiddleware, allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
+    allow_methods=["*"], allow_headers=["*"]
 )
 
 
@@ -88,6 +89,8 @@ class ChatReq(BaseModel):
 
 class PlayerJoinReq(BaseModel):
     name: str = Field(default='玩家', min_length=1, max_length=PLAYER.name_max_chars)
+    session_id: Optional[str] = Field(default=None, max_length=100)
+    player_token: Optional[str] = Field(default=None, max_length=128)
 
 
 class PlayerSessionReq(BaseModel):
@@ -98,6 +101,17 @@ class PlayerChatReq(PlayerSessionReq):
     npc: str
     message: str = Field(min_length=1, max_length=PLAYER.message_max_chars)
     request_id: str = Field(min_length=1, max_length=100)
+
+
+class PlayerEngageReq(PlayerSessionReq):
+    npc: str
+
+
+class PlayerPositionReq(PlayerSessionReq):
+    map_id: str
+    room_id: str
+    x: float = Field(ge=-1000000, le=1000000, allow_inf_nan=False)
+    y: float = Field(ge=-1000000, le=1000000, allow_inf_nan=False)
 
 
 class PublicLocation(BaseModel):
@@ -248,18 +262,34 @@ def player_action(action):
 
 
 @app.get('/player')
-def player_state():
-    return get_service().player.state()
+def player_state(x_player_session: Optional[str] = Header(default=None)):
+    return get_service().player.state(x_player_session)
 
 
 @app.post('/player/join')
 def player_join(req: PlayerJoinReq):
-    return player_action(lambda: get_service().player.join(req.name))
+    return player_action(lambda: get_service().player.join(req.name, req.session_id, req.player_token))
 
 
 @app.post('/player/leave')
 def player_leave(req: PlayerSessionReq):
     return player_action(lambda: get_service().player.leave(req.session_id))
+
+
+@app.post('/player/engage')
+def player_engage(req: PlayerEngageReq):
+    return player_action(lambda: get_service().player.engage(req.session_id, req.npc))
+
+
+@app.post('/player/position')
+def player_position(req: PlayerPositionReq):
+    return player_action(lambda: get_service().player.report_position(
+        req.session_id, req.map_id, req.room_id, req.x, req.y))
+
+
+@app.post('/player/disengage')
+def player_disengage(req: PlayerSessionReq):
+    return player_action(lambda: get_service().player.disengage(req.session_id))
 
 
 @app.post('/player/chat', status_code=202)

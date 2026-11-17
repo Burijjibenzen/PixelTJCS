@@ -21,7 +21,7 @@
 | 遗忘三机制（衰减/淘汰/反思） | ✅ | `GameService.advance_time()` |
 | 关系矩阵 + LLM 评估 | ✅ | `backend/relations.py` |
 | 游戏时钟 + 时间加速 | ✅ | `backend/world.py` |
-| 玩家身份、会话与NPC交谈 | ✅ 可视化界面尚未完成 | `player_mode.py`、`player_chat.gd`，默认关闭；完整记忆与关系，详见 `M4.1.md` |
+| 玩家身份、会话与NPC交谈 | ✅ M4.2 已实现，待完整可见窗口验收 | `player_mode.py`、`player_chat.gd`，默认关闭；完整记忆与关系，详见 `M4.2.md` |
 | Godot 前端独立运行（地图/寻路/移动/调试视图） | ✅ M2.1 | `frontend/`（§6/§7） |
 | NPC 自由移动 | 三层地图支持楼内、跨层及跨馆寻路 | `frontend/scripts/npc.gd` |
 | 前端↔后端联动（/world 驱动移动 + 位置上报） | ✅ M2.2 | `frontend/scripts/api_client.gd` + `POST /world/report`（§12 第 7 条） |

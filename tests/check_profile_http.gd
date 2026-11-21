@@ -14,6 +14,7 @@ func wait_profile(panel, npc_name: String) -> bool:
 func verify() -> void:
 	var api := root.get_node("ApiClient")
 	api.set_process(false)
+	api.backend_url = OS.get_environment("ROAM_PROFILE_BACKEND")
 	api.backend_online = false
 	var main = load("res://scenes/main.tscn").instantiate()
 	root.add_child(main)
@@ -26,9 +27,7 @@ func verify() -> void:
 		if child.get_script() and child.get_script().resource_path.ends_with("social_ui.gd"):
 			ui = child
 	ui.set_process(false)
-	ui.history_pending = true
 	var panel = ui.profile_panel
-	panel.backend_url = OS.get_environment("ROAM_PROFILE_BACKEND")
 	api.last_world = JSON.parse_string(OS.get_environment("ROAM_PROFILE_WORLD"))
 	api.backend_online = true
 	var names: Array = JSON.parse_string(OS.get_environment("ROAM_PROFILE_NAMES"))
@@ -45,6 +44,11 @@ func verify() -> void:
 			push_error("Profile HTTP response did not reach visual panel")
 			quit(2)
 			return
+		for row in panel.schedule_box.get_children():
+			if row.get_child_count() != 3 or row.get_child(2).text == "日常安排":
+				push_error("Profile HTTP did not provide the scheduled activity for " + npc_name)
+				quit(2)
+				return
 	var preview := OS.get_environment("ROAM_PROFILE_PREVIEW")
 	if not preview.is_empty():
 		await process_frame

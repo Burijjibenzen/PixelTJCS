@@ -1,4 +1,4 @@
-"""原版气泡分段：新台词即时显示，每段最多停留配置中的现实秒数。"""
+"""气泡分段，顺序播放的台词按长度分配阅读时间。"""
 from backend.config import SOCIAL
 
 
@@ -12,4 +12,4 @@ def dialogue_segments(text):
             part = ''
     if part.strip():
         parts.append(part.strip())
-    return [dict(text=part, seconds=SOCIAL.bubble_seconds) for part in parts]
+    return [dict(text=part, seconds=min(SOCIAL.bubble_seconds,4.0+len(part)/20)) for part in parts]

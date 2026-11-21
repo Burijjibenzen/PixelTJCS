@@ -1,8 +1,9 @@
 extends VBoxContainer
 ## 公开角色资料页。只展示白名单字段，不读取原始人格卡或模型提示词。
 
-const MUTED := Color(0.70, 0.76, 0.84)
-const ACCENT := Color(0.52, 0.86, 0.81)
+
+const MUTED := Color("#69584a")
+const ACCENT := Color("#805135")
 var actors: Array = []
 var backend_url := ""
 var selected_name := ""
@@ -39,7 +40,7 @@ func setup(npcs: Array) -> void:
 
 func _ready() -> void:
 	if backend_url.is_empty():
-		backend_url = ApiClient.BACKEND
+		backend_url = ApiClient.backend_url
 	add_theme_constant_override("separation", 8)
 	http = HTTPRequest.new()
 	http.timeout = 4.0
@@ -68,7 +69,7 @@ func _ready() -> void:
 	header.add_theme_constant_override("separation", 14)
 	body.add_child(header)
 	var portrait_frame := PanelContainer.new()
-	portrait_frame.add_theme_stylebox_override("panel", _surface(Color(0.13, 0.19, 0.25)))
+	portrait_frame.add_theme_stylebox_override("panel", _surface(Color("#e7dbcb")))
 	header.add_child(portrait_frame)
 	portrait = TextureRect.new()
 	portrait.custom_minimum_size = Vector2(64, 76)
@@ -80,7 +81,7 @@ func _ready() -> void:
 	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	identity.add_theme_constant_override("separation", 4)
 	header.add_child(identity)
-	name_label = _label("", 22, Color.WHITE)
+	name_label = _label("", 22, Color.BLACK)
 	identity.add_child(name_label)
 	role_label = _label("", 12, ACCENT)
 	identity.add_child(role_label)
@@ -132,7 +133,7 @@ func _section(parent: VBoxContainer, heading: String) -> Label:
 	group.add_theme_constant_override("separation", 4)
 	parent.add_child(group)
 	group.add_child(_label(heading, 13, ACCENT))
-	var content := _label("", 14, Color(0.91, 0.94, 0.98))
+	var content := _label("", 14, Color("#46372c"))
 	group.add_child(content)
 	return content
 
@@ -180,7 +181,7 @@ func refresh() -> void:
 func _profile_done(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
 	var completed_name := request_name
 	pending = false
-	var data = JSON.parse_string(body.get_string_from_utf8())
+	var data = null if body.is_empty() else JSON.parse_string(body.get_string_from_utf8())
 	if result == HTTPRequest.RESULT_SUCCESS and code == 200 and data is Dictionary and str(data.get("name", "")) == completed_name:
 		cache[completed_name] = data
 		if selected_name == completed_name:
@@ -223,8 +224,8 @@ func _render(data: Dictionary) -> void:
 	for trait_text in traits:
 		var chip := PanelContainer.new()
 		chip.custom_minimum_size.x = 88
-		chip.add_theme_stylebox_override("panel", _surface(Color(0.14, 0.21, 0.28)))
-		var label := _label(str(trait_text), 12, Color(0.83, 0.92, 0.98))
+		chip.add_theme_stylebox_override("panel", _surface(Color("#eadcd0")))
+		var label := _label(str(trait_text), 12, Color("#6a472f"))
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		chip.add_child(label)
 		traits_row.add_child(chip)
@@ -250,6 +251,9 @@ func _render(data: Dictionary) -> void:
 		var label := _label(str(place.get("name", "未知地点")), 13, MUTED)
 		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(label)
+		var activity := _label(str(entry.get("activity", "日常安排")), 13, ACCENT)
+		activity.custom_minimum_size.x = 108
+		row.add_child(activity)
 		schedule_box.add_child(row)
 	if schedule.is_empty():
 		schedule_box.add_child(_label("未设置日程" if not data.is_empty() else "连接后端即可查看公开目标与日程，无需配置模型密钥。", 13, MUTED))

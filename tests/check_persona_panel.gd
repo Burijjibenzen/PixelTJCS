@@ -16,7 +16,7 @@ func payload(npc_name: String) -> Dictionary:
 	return {"name": npc_name, "role": "student", "title": npc_name + "的公开身份", "expertise": "公开专长",
 		"traits": ["认真", "乐于讨论"], "mbti": "ENTJ", "tone": "简洁", "catchphrase": "再核对一下",
 		"goals": {"short_term": "近期公开目标", "long_term": "长期公开目标"},
-		"schedule": [{"time": "08:00", "location": {"name": "公开地点"}}],
+		"schedule": [{"time": "08:00", "location": {"name": "公开地点"}, "activity": "查阅资料"}],
 		"location": {"name": "当前位置"}, "destination": {"name": "目的地"}, "secrets": ["PRIVATE_UI_SENTINEL"]}
 
 func reply(panel, npc_name: String, data: Dictionary) -> void:
@@ -58,6 +58,7 @@ func verify() -> void:
 	api.backend_online = true
 	reply(panel, "B", payload("B"))
 	if not check(panel.title_label.text == "B的公开身份" and panel.schedule_box.get_child_count() == 1, "public fields and schedule render"): return
+	if not check(panel.schedule_box.get_child(0).get_child(2).text == "查阅资料", "schedule renders the activity in its own column"): return
 	if not check(not "PRIVATE_UI_SENTINEL" in all_text(panel), "unknown private fields never render"): return
 	api.last_world = {"npcs": {"B": {"map_id": "zhixinguan_floor2", "room_id": "zx2_lib", "target_map_id": "jishilou_floor4", "target_room_id": "R05"}}}
 	panel._render_location()
@@ -102,8 +103,8 @@ func verify() -> void:
 	ui.picker.select(1)
 	ui.picker.item_selected.emit(1)
 	if not check(ui.tabs.current_tab == 5 and ui.profile_panel.selected_name == "B", "shared actor picker drives the visual profile tab"): return
-	if not check(not ui.history_slider.visible and not ui.meeting_status.visible, "profile view gives details room without unrelated meeting controls"): return
+	if not check(ui.picker.get_parent().get_child_count() == 3, "profile view shares one actor picker and no status or history controls"): return
 	ui.tabs.current_tab = 0
-	if not check(ui.history_slider.visible and ui.meeting_status.visible, "existing memory and meeting controls return on other tabs"): return
+	if not check(ui.picker.visible and ui.tabs.get_child(0) is ScrollContainer, "memory uses the same picker and one scroll container"): return
 	print("PASS: public profile UI, offline/cache/error states, rapid selection, optional fields, live location, safe text, scrolling")
 	quit(0)

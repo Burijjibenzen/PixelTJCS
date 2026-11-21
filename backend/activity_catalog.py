@@ -21,6 +21,7 @@ class PlannedActivity(BaseModel):
     start_minute: int = Field(ge=0, le=1439)
     duration: float = Field(default=180, ge=30, le=360, allow_inf_nan=False)
     basis: Literal['routine','memory','event','relationship'] = 'routine'
+    reason: str = Field(default='',max_length=160)
     partner: str = ''
 
 

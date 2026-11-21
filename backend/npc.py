@@ -10,12 +10,13 @@
 """
 
 import uuid
+from contextlib import nullcontext
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
 from backend.config import LLM as LLM_CFG
-from backend.config import MEMORY
+from backend.config import ACTIVITY, MEMORY
 from backend.llm import LLMClient
 from backend.logger import get_logger
 from backend.memory import MemoryStore
@@ -44,16 +45,49 @@ class InsightSchema(BaseModel):
 
 
 # ----------------------------------------------------------------------
+def memory_context(memory, agent, relationships):
+    active = [m.content for m in memory.get_active(agent, 8) if m.type != 'reflection'][:6]
+    insights = [m.content for m in memory.get_reflections(agent, 3)]
+    return (f"【对相关人物的好感】{relationships or '无特定人物'}\n"
+            f"【活跃记忆】{active}\n【反思洞察】{insights}")
+
+
+def remember_experience(memory, agent, persona, evidence, *, perspective, kind, game_time,
+                        location, importance, relationships='', participants=None, tags=None,
+                        memory_id=None, fallback=None, commit=nullcontext):
+    """生成角色自己的回忆，原始经历由调用方记录。"""
+    if memory_id:
+        existing = memory.get_by_id(memory_id)
+        if existing:
+            return existing
+    assessment = memory.llm.chat_json(
+        persona,
+        f"{memory_context(memory, agent, relationships)}\n"
+        f"【经历方式】{perspective}\n【当时接触到的内容】\n{evidence}\n"
+        "按自己的性格、好感、记忆和洞察，用第一人称写下你会记得的内容，并给出重要性和情绪。"
+        "可以选择性记忆、误听、改写细节，或补上你当时以为的解释。"
+        "把推测自然写成自己的印象，别把旁听写成亲历。",
+        MemoryAssessment, timeout=ACTIVITY.model_timeout_seconds,
+    )
+    return memory.add(
+        agent=agent, content=assessment.content if assessment else (evidence if fallback is None else fallback),
+        type=kind, importance=assessment.importance if assessment else importance,
+        emotion=assessment.emotion if assessment else 'neutral', game_time=game_time, location=location,
+        participants=participants, tags=tags, memory_id=memory_id, commit=commit,
+    )
+
+
 class NPCAgent:
     """一个可说话、可记忆、可反思的校园角色。"""
 
     def __init__(
-        self, card: PersonaCard, world: World, llm: LLMClient, memory: MemoryStore
+        self, card: PersonaCard, world: World, llm: LLMClient, memory: MemoryStore, relations
     ):
         self.card = card
         self.world = world
         self.llm = llm
         self.memory = memory
+        self.relations = relations
         self.name = card.name
 
     # ---------------- 上下文构建 ----------------
@@ -110,60 +144,37 @@ class NPCAgent:
         return text or self.card.fallback_line()
 
     # ---------------- 记忆写入 ----------------
+    def remember(self, evidence, *, participants=None, **experience):
+        relationships = ', '.join(f'{name} {self.relations.get(self.name, name):.0f}/100'
+                                  for name in participants or ())
+        return remember_experience(
+            self.memory, self.name, self.card.render_system_prompt(), evidence,
+            relationships=relationships, participants=participants, **experience,
+        )
+
     def save_dialogue_memory(
-        self, transcript: List[dict], other: str, game_time: float, location: str, memory_id=None
+        self, transcript: List[dict], other: str, game_time: float, location: str, memory_id=None, commit=nullcontext
     ):
         """对话结束：以我的视角评定并保存这条对话记忆（LLM 失败则降级兜底）。"""
-        # M3: 恢复图节点时复用已经提交的记忆，避免重复调用模型和写库。
-        if memory_id:
-            existing = self.memory.get_by_id(memory_id)
-            if existing:
-                return existing
         transcript_text = "\n".join(f"{t['speaker']}：{t['text']}" for t in transcript)
-        assess = self.llm.chat_json(
-            f"你是校园角色「{self.name}」。刚刚你和「{other}」谈了一次话。",
-            f"请以「{self.name}」的第一人称视角总结这段对话给你留下的记忆，"
-            f"并评定重要性与你的情绪:\n{transcript_text}",
-            MemoryAssessment,
-        )
-        if assess is None:
-            # 离线兜底: 保存模板记忆，保证记忆链路不中断
-            tail = transcript[-1]["text"][:20] if transcript else ""
-            assess = MemoryAssessment(
-                content=f"我和{other}聊了几句（{tail}...）",
-                importance=0.4, emotion="neutral",
-            )
-        return self.memory.add(
-            agent=self.name,
-            content=assess.content,
-            type="dialogue",
-            memory_id=memory_id,
-            importance=assess.importance,
-            emotion=assess.emotion,
-            game_time=game_time,
-            location=location,
-            participants=[other],
+        tail = transcript[-1]["text"][:20] if transcript else ""
+        return self.remember(
+            transcript_text, perspective=f'你刚和{other}交谈', kind='dialogue',
+            game_time=game_time, location=location, participants=[other], memory_id=memory_id,
+            importance=0.4, fallback=f'我和{other}聊了几句（{tail}...）', commit=commit,
         )
 
     # ---------------- 日常观察（低重要性记忆，遗忘演示素材） ----------------
-    def observe(self, content: str, importance: float = 0.25):
-        """记下一件身边小事，直接入库（不走 LLM 评定）。
-
-        琐事的重要性天然偏低，是"时间衰减遗忘"机制的主力演示素材:
-        三五天后别人还记得要紧事，这些琐事已经进了遗忘档案。
-        """
-        return self.memory.add(
-            agent=self.name,
-            content=content,
-            type="observation",
-            importance=importance,
-            emotion="neutral",
+    def observe(self, content: str, importance: float = 0.25, *, commit=nullcontext):
+        return self.remember(
+            content, perspective='你亲自观察到一件事', kind='observation', importance=importance,
             game_time=self.world.clock.now,
             location=self.world.area_of(self.name) or "j3_lab",
+            commit=commit,
         )
 
     # ---------------- 反思（记忆压缩） ----------------
-    def maybe_reflect(self) -> bool:
+    def maybe_reflect(self,commit=nullcontext) -> bool:
         """未反思的原始记忆攒够 reflect_every 条 → LLM 压缩成一条洞察。
 
         原始记忆 importance 减半（淡出），洞察以较高重要性入库。
@@ -177,13 +188,17 @@ class NPCAgent:
         reflection_id = uuid.uuid5(uuid.NAMESPACE_URL,
             self.name + ':' + ','.join(sorted(m.id for m in batch))).hex
         if self.memory.get_by_id(reflection_id):
-            self.memory.mark_reflected(self.name, [m.id for m in batch])
+            with commit():
+                self.memory.mark_reflected(self.name, [m.id for m in batch])
             return True
         batch_text = "\n".join(f"- {m.content}" for m in batch)
+        people = sorted({person for memory in batch for person in memory.participants})
+        relationships = ', '.join(f'{name} {self.relations.get(self.name, name):.0f}/100' for name in people)
         insight = self.llm.chat_json(
-            f"你是校园角色「{self.name}」。以下是你最近的一段零散记忆。",
-            f"请把这些零散记忆提炼成一条更抽象的第一人称洞察"
-            f"（规律/感受/结论），并评定其重要性:\n{batch_text}",
+            self.card.render_system_prompt(),
+            f"{memory_context(self.memory, self.name, relationships)}\n"
+            "请根据自己的性格和看法，把以下回忆提炼成一条第一人称洞察，"
+            f"可以写主观联想或推测，并评定重要性。\n{batch_text}",
             InsightSchema,
         )
         if insight is None:
@@ -199,8 +214,10 @@ class NPCAgent:
             game_time=self.world.clock.now,
             location=self.world.area_of(self.name) or "",
             tags=["reflection"],
+            commit=commit,
         )
-        self.memory.mark_reflected(self.name, [m.id for m in batch])
+        with commit():
+            self.memory.mark_reflected(self.name, [m.id for m in batch])
         log.info("🧠 [%s] 反思完成: %s", self.name, insight.insight[:40])
         return True
 

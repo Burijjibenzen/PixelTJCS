@@ -1,4 +1,5 @@
 extends CanvasLayer
+signal stage_selection_changed(enabled: bool)
 ## 公告浏览/发布是观察者操作，不代替NPC实际阅读。
 var actors: Array = []
 var boards: Array = []
@@ -14,11 +15,29 @@ var http: HTTPRequest
 var picker: OptionButton
 var publish_button: Button
 var read_status: Label
-var refresh_button: Button
-var title_edit: LineEdit
 var content_edit: TextEdit
 var status: Label
 var cards: VBoxContainer
+var cards_scroll: ScrollContainer
+var heading_title: Label
+var admin_controls: VBoxContainer
+var tabs: TabContainer
+var whisper_cards: VBoxContainer
+var world_controls: HBoxContainer
+var delete_confirm: ConfirmationDialog
+var source_picker: OptionButton
+var whisper_edit: TextEdit
+var whisper_button: Button
+var reset_button: Button
+var reset_confirm: ConfirmationDialog
+var god_mode := false
+var stage_button: Button
+var stage_status: Label
+var stage_http: HTTPRequest
+var stage_selecting := false
+var stage_pending := false
+var stage_target := ""
+var stage_appearance := false
 
 func setup(npcs: Array) -> void:
 	actors = npcs
@@ -32,12 +51,19 @@ func _ready() -> void:
 	http.timeout = 4
 	add_child(http)
 	http.request_completed.connect(_done)
+	stage_http = HTTPRequest.new()
+	stage_http.timeout = 8
+	add_child(stage_http)
+	stage_http.request_completed.connect(_stage_done)
 	var panel := PanelContainer.new()
 	panel.name = "Window"
-	panel.position = Vector2(280, 55)
-	panel.size = Vector2(720, 610)
+	panel.theme = preload("res://assets/tea_theme.tres")
+	panel.position = Vector2(280, 86)
+	panel.size = Vector2(720, 570)
+	panel.mouse_force_pass_scroll_events = false
+	panel.minimum_size_changed.connect(func(): panel.size = Vector2(720, 570))
 	var surface := StyleBoxFlat.new()
-	surface.bg_color = Color(0.07, 0.10, 0.15, 0.99)
+	surface.bg_color = Color("#f3e9dc")
 	surface.set_corner_radius_all(8)
 	surface.set_content_margin_all(14)
 	panel.add_theme_stylebox_override("panel", surface)
@@ -47,58 +73,124 @@ func _ready() -> void:
 	panel.add_child(body)
 	var heading := HBoxContainer.new()
 	body.add_child(heading)
-	var title := _label("校园公告栏", 21)
-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	heading.add_child(title)
+	heading_title = _label("校园公告栏", 21)
+	heading_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	heading.add_child(heading_title)
 	var close := Button.new()
-	close.text = "关闭"
+	close.text = "X"
+	close.tooltip_text = "关闭"
 	close.pressed.connect(hide)
 	heading.add_child(close)
-	body.add_child(_label("角色靠近公告栏会自行停下阅读；正在交谈时，结束后再读。", 13))
+	var drag := preload("res://scripts/window_drag.gd").new()
+	add_child(drag)
+	drag.bind(panel, heading_title)
+	status = _label("", 13)
+	status.custom_minimum_size.y = 22
+	body.add_child(status)
+	tabs = TabContainer.new()
+	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	body.add_child(tabs)
+	var notices_page := VBoxContainer.new()
+	notices_page.name = "公告"
+	tabs.add_child(notices_page)
+	notices_page.add_child(_label("角色会从同一走廊走到公告栏前，再停下阅读。", 13))
 	picker = OptionButton.new()
-	body.add_child(picker)
+	notices_page.add_child(picker)
 	for map_id in Game.MAP_IDS:
 		for board: Dictionary in Game.floor_data[map_id].get("noticeboards", []):
 			boards.append(board)
 			picker.add_item(str(board.location) + " · 公告栏")
-	picker.item_selected.connect(func(index): open_board(str(boards[index].id)))
-	status = _label("", 13)
-	status.custom_minimum_size.y = 36
-	body.add_child(status)
-	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size.y = 200
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	body.add_child(scroll)
+	picker.item_selected.connect(func(index): open_board(str(boards[index].id), god_mode))
+	notices_page.add_child(_label("历史公告", 16))
+	cards_scroll = ScrollContainer.new()
+	cards_scroll.custom_minimum_size.y = 145
+	cards_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	cards_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	notices_page.add_child(cards_scroll)
 	cards = VBoxContainer.new()
 	cards.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	cards.add_theme_constant_override("separation", 10)
-	scroll.add_child(cards)
-	body.add_child(HSeparator.new())
-	title_edit = LineEdit.new()
-	title_edit.placeholder_text = "公告标题（最多80字）"
-	title_edit.max_length = 80
-	body.add_child(title_edit)
+	cards_scroll.add_child(cards)
+	admin_controls = VBoxContainer.new()
+	admin_controls.hide()
+	notices_page.add_child(admin_controls)
 	content_edit = TextEdit.new()
 	content_edit.placeholder_text = "公告正文（最多500字）"
 	content_edit.custom_minimum_size.y = 76
 	content_edit.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-	body.add_child(content_edit)
-	title_edit.text_changed.connect(func(_text): _update_buttons())
+	admin_controls.add_child(content_edit)
 	content_edit.text_changed.connect(_update_buttons)
-	var actions := HBoxContainer.new()
-	body.add_child(actions)
 	publish_button = Button.new()
 	publish_button.text = "发布到此公告栏"
 	publish_button.pressed.connect(publish)
-	actions.add_child(publish_button)
-	refresh_button = Button.new()
-	refresh_button.text = "刷新公告"
-	refresh_button.pressed.connect(refresh)
-	actions.add_child(refresh_button)
+	admin_controls.add_child(publish_button)
 	read_status = _label("角色靠近后会自动阅读，无需手动安排。", 13)
-	body.add_child(read_status)
-	_update_buttons()
+	notices_page.add_child(read_status)
+	var whisper_page := VBoxContainer.new()
+	whisper_page.name = "悄悄话"
+	tabs.add_child(whisper_page)
+	whisper_page.add_child(_label("悄悄话历史", 16))
+	var history_scroll := ScrollContainer.new()
+	history_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	history_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	whisper_page.add_child(history_scroll)
+	whisper_cards = VBoxContainer.new()
+	whisper_cards.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	history_scroll.add_child(whisper_cards)
+	whisper_edit = TextEdit.new()
+	whisper_edit.placeholder_text = "例如：去图书分馆查阅资料，停留半小时"
+	whisper_edit.custom_minimum_size.y = 54
+	whisper_edit.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	whisper_edit.text_changed.connect(_update_buttons)
+	whisper_page.add_child(whisper_edit)
+	var whisper_controls := HBoxContainer.new()
+	whisper_page.add_child(whisper_controls)
+	source_picker = OptionButton.new()
+	for npc in actors:
+		source_picker.add_item(npc.npc_name)
+	source_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	whisper_controls.add_child(source_picker)
+	whisper_button = Button.new()
+	whisper_button.text = "发送悄悄话"
+	whisper_button.pressed.connect(_whisper)
+	whisper_controls.add_child(whisper_button)
+	_render_whispers([])
+	world_controls = HBoxContainer.new()
+	body.add_child(world_controls)
+	stage_button = Button.new()
+	stage_button.pressed.connect(func(): _set_stage_selection(not stage_selecting))
+	world_controls.add_child(stage_button)
+	stage_status = _label("", 13)
+	stage_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	world_controls.add_child(stage_status)
+	reset_button = Button.new()
+	reset_button.text = "重置世界"
+	reset_button.pressed.connect(func(): reset_confirm.popup_centered())
+	world_controls.add_child(reset_button)
+	reset_confirm = ConfirmationDialog.new()
+	reset_confirm.theme = panel.theme
+	reset_confirm.title = "重置世界"
+	reset_confirm.dialog_text = "清空事件、记忆、公告、关系变化、临时行程和玩家存档。人物回到初始位置，时钟回到第 1 天 08:00。此操作不可撤销。"
+	reset_confirm.ok_button_text = "确认重置"
+	reset_confirm.confirmed.connect(_reset_world)
+	add_child(reset_confirm)
+	delete_confirm = ConfirmationDialog.new()
+	delete_confirm.theme = panel.theme
+	delete_confirm.title = "删除公告"
+	delete_confirm.dialog_text = "确定删除这条公告？角色已经获得的记忆会保留。"
+	delete_confirm.ok_button_text = "删除"
+	delete_confirm.confirmed.connect(func():
+		if board_id == delete_confirm.get_meta("board_id"):
+			_request("delete", {"notice_id": delete_confirm.get_meta("notice_id")}))
+	add_child(delete_confirm)
+	tabs.tab_changed.connect(func(_index):
+		if visible and not board_id.is_empty():
+			status.text = ""
+			refresh())
+	_set_stage_selection(false)
+	visibility_changed.connect(func():
+		if not visible:
+			_set_stage_selection(false))
 	hide()
 
 func _label(text: String, font_size: int) -> Label:
@@ -108,7 +200,7 @@ func _label(text: String, font_size: int) -> Label:
 	label.add_theme_font_size_override("font_size", font_size)
 	return label
 
-func open_board(key := "") -> void:
+func open_board(key := "", admin := false) -> void:
 	if boards.is_empty():
 		return
 	if key.is_empty():
@@ -121,10 +213,19 @@ func open_board(key := "") -> void:
 	if found < 0:
 		return
 	board_id = key
+	god_mode = admin
+	if not god_mode:
+		_set_stage_selection(false)
+	heading_title.text = "上帝模式" if god_mode else "校园公告栏"
+	admin_controls.visible = god_mode
+	world_controls.visible = god_mode
+	read_status.visible = not god_mode
+	tabs.tabs_visible = god_mode
+	tabs.set_tab_hidden(1, not god_mode)
 	picker.select(found)
 	show()
 	_render(cache.get(key, {}).get("notices", []))
-	status.text = "后端未连接，连接后可查看与发布公告。" if not ApiClient.backend_online else "正在读取公告…"
+	status.text = "后端未连接" if not ApiClient.backend_online else "正在读取公告…"
 	refresh_timer = 3.0
 	_update_buttons()
 	refresh()
@@ -137,7 +238,8 @@ func _process(delta: float) -> void:
 		status.text = "后端未连接，当前显示缓存公告。" if cache.has(board_id) else "后端未连接，连接后可查看与发布公告。"
 		return
 	# 输入焦点（包括中文输入法正在组词）或未发布草稿存在时，不自动请求。
-	if title_edit.has_focus() or content_edit.has_focus() or not title_edit.text.is_empty() or not content_edit.text.is_empty():
+	if god_mode and (content_edit.has_focus() or whisper_edit.has_focus() or reset_confirm.visible
+			or delete_confirm.visible or not content_edit.text.is_empty() or not whisper_edit.text.is_empty()):
 		refresh_timer = 3.0
 		return
 	refresh_timer -= delta
@@ -146,28 +248,89 @@ func _process(delta: float) -> void:
 		refresh()
 
 func refresh() -> void:
-	_request("load")
+	_request("history" if god_mode and tabs.current_tab == 1 else "load")
 
 func publish() -> void:
-	_request("publish", {"title": title_edit.text.strip_edges(), "content": content_edit.text.strip_edges()})
+	if god_mode:
+		_request("publish", {"content": content_edit.text.strip_edges()})
+
+func _whisper() -> void:
+	_request("whisper", {"npc": source_picker.get_item_text(source_picker.selected),
+		"text": whisper_edit.text.strip_edges()})
+
+func _set_stage_selection(enabled: bool) -> void:
+	stage_selecting = enabled
+	stage_button.text = "取消角色选择" if enabled else "退场／出演"
+	stage_status.text = "在左侧选择一名角色" if enabled else ""
+	stage_selection_changed.emit(enabled)
+	_update_buttons()
+
+func set_actor_stage(npc_name: String, on_stage: bool) -> void:
+	var world: String = ApiClient.last_world.get("social", {}).get("world_id", "")
+	if not stage_selecting or stage_pending or not ApiClient.backend_online or world.is_empty():
+		return
+	stage_pending = true
+	stage_target = npc_name
+	stage_appearance = on_stage
+	stage_status.text = "正在更新%s…" % npc_name
+	var payload := JSON.stringify({"npc": npc_name, "on_stage": on_stage, "world_id": world})
+	if stage_http.request(backend_url + "/world/cast", ["Content-Type: application/json"], HTTPClient.METHOD_POST, payload) != OK:
+		stage_pending = false
+		stage_status.text = "角色状态请求发送失败，请重试"
+	_update_buttons()
+
+func _stage_done(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	stage_pending = false
+	var data = null if body.is_empty() else JSON.parse_string(body.get_string_from_utf8())
+	if result == HTTPRequest.RESULT_SUCCESS and code == 200 and data is Dictionary:
+		ApiClient.apply_stream_world(data.world)
+		_set_stage_selection(false)
+		stage_status.text = "%s已%s" % [stage_target, "出演" if stage_appearance else "退场"]
+	else:
+		stage_status.text = str(data.get("detail", "角色状态更新失败，请重试")) if data is Dictionary else "连接失败，请重试"
+	_update_buttons()
+
+func _reset_world() -> void:
+	var world_id: String = ApiClient.last_world.get("social", {}).get("world_id", "")
+	if not world_id.is_empty():
+		_request("reset", {"confirm": true, "world_id": world_id})
 
 func _request(kind: String, payload := {}) -> void:
-	if pending or board_id.is_empty() or not ApiClient.backend_online:
+	if board_id.is_empty() or not ApiClient.backend_online:
 		return
+	if pending:
+		if operation not in ["load", "history"] or kind == operation:
+			return
+		http.cancel_request()
 	pending = true
 	operation = kind
 	request_board = board_id
-	request_draft = {"title": title_edit.text, "content": content_edit.text} if kind == "publish" else {}
+	request_draft = {"content": content_edit.text} if kind == "publish" else {}
+	if kind == "whisper":
+		request_draft = {"text": whisper_edit.text}
+		status.text = "正在解析悄悄话…"
+	if kind == "reset":
+		status.text = "正在重置世界…"
+	# 重置要等正在执行的后台工作退出，仍可通过事件流收到完成状态。
+	http.timeout = 0.0 if kind == "reset" else 32.0 if kind == "whisper" else 4.0
 	_update_buttons()
 	var path := "/noticeboards/" + board_id.uri_encode() + ("/read" if kind == "read" else "/notices")
-	var method := HTTPClient.METHOD_GET if kind == "load" else HTTPClient.METHOD_POST
-	if http.request(backend_url + path, ["Content-Type: application/json"], method, "" if kind == "load" else JSON.stringify(payload)) != OK:
+	if kind in ["whisper", "reset"]:
+		path = "/world/" + kind
+	if kind == "history":
+		path = "/world/whisper/history"
+	if kind == "delete":
+		path += "/" + str(payload.notice_id).uri_encode()
+	var method := HTTPClient.METHOD_GET if kind in ["load", "history"] else HTTPClient.METHOD_POST
+	if kind == "delete":
+		method = HTTPClient.METHOD_DELETE
+	if http.request(backend_url + path, ["Content-Type: application/json"], method, JSON.stringify(payload) if method == HTTPClient.METHOD_POST else "") != OK:
 		pending = false
-		status.text = "请求未能发送，请稍后刷新。"
+		status.text = "请求未能发送，请检查后端连接。"
 		_update_buttons()
 
 func _done(result: int, code: int, _headers: PackedStringArray, bytes: PackedByteArray) -> void:
-	var data = JSON.parse_string(bytes.get_string_from_utf8())
+	var data = null if bytes.is_empty() else JSON.parse_string(bytes.get_string_from_utf8())
 	var completed_board := request_board
 	var completed_operation := operation
 	var completed_draft := request_draft
@@ -175,14 +338,28 @@ func _done(result: int, code: int, _headers: PackedStringArray, bytes: PackedByt
 	_update_buttons()
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200 or not data is Dictionary:
 		if board_id == completed_board:
-			status.text = str(data.get("detail", "公告读取失败，请刷新重试。")) if data is Dictionary else "连接失败，请检查后端。"
-	elif completed_operation == "load":
+			status.text = str(data.get("detail", "操作失败，请重试。")) if data is Dictionary else "连接失败，请检查后端。"
+	elif completed_operation == "reset":
+		ApiClient.apply_stream_world(data.world)
+		hide()
+		return
+	elif completed_operation == "whisper":
+		if god_mode:
+			status.text = "已指派 " + str(data.activity.title)
+			if whisper_edit.text == completed_draft.get("text", ""):
+				whisper_edit.clear()
+			refresh()
+	elif completed_operation == "history":
+		_render_whispers(data.get("history", []))
+		if god_mode and tabs.current_tab == 1 and not status.text.begins_with("已指派"):
+			status.text = "共 %d 条已发送指令" % data.get("history", []).size()
+	elif completed_operation in ["load", "delete"]:
 		var changed: bool = cache.get(completed_board, {}).get("notices", []) != data.get("notices", [])
 		cache[completed_board] = data
 		if board_id == completed_board:
 			if changed:
 				_render(data.get("notices", []))
-			status.text = "共 %d 条公告 · 发布不会自动通知所有角色" % data.get("notices", []).size()
+			status.text = "已删除公告" if completed_operation == "delete" else "共 %d 条公告" % data.get("notices", []).size()
 			var readers: PackedStringArray = []
 			for row: Dictionary in data.get("readers", []):
 				readers.append(str(row.npc) + "：" + str(row.detail))
@@ -191,8 +368,7 @@ func _done(result: int, code: int, _headers: PackedStringArray, bytes: PackedByt
 		if board_id == completed_board:
 			status.text = "发布成功" if completed_operation == "publish" else str(data.get("detail", "角色已开始阅读"))
 			# 只清空刚刚提交的版本，不能删除请求期间继续输入的新内容。
-			if completed_operation == "publish" and title_edit.text == completed_draft.get("title", "") and content_edit.text == completed_draft.get("content", ""):
-				title_edit.clear()
+			if completed_operation == "publish" and content_edit.text == completed_draft.get("content", ""):
 				content_edit.clear()
 		refresh_timer = 0.5
 	if board_id != completed_board:
@@ -203,23 +379,58 @@ func _render(notices: Array) -> void:
 		cards.remove_child(child)
 		child.queue_free()
 	if notices.is_empty():
-		cards.add_child(_label("暂无公告，可以在下方发布校园通知。", 15))
+		cards.add_child(_label("暂无公告。", 15))
 	for notice: Dictionary in notices:
 		var card := VBoxContainer.new()
 		card.add_theme_constant_override("separation", 6)
 		cards.add_child(card)
-		card.add_child(_label(str(notice.get("title", "校园通知")), 18))
-		var minutes := maxi(0, int(float(notice.get("published_at", 0))))
-		card.add_child(_label("发布于：第 %d 天 %02d:%02d · %s" % [int(minutes / 1440) + 1, int((minutes % 1440) / 60), minutes % 60, picker.get_item_text(picker.selected)], 12))
+		var header := HBoxContainer.new()
+		card.add_child(header)
+		var stamp := _label("发布于：" + _timestamp(float(notice.get("published_at", 0))), 12)
+		stamp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		header.add_child(stamp)
+		if god_mode:
+			var remove := Button.new()
+			remove.text = "删除"
+			remove.pressed.connect(func():
+				delete_confirm.set_meta("board_id", board_id)
+				delete_confirm.set_meta("notice_id", notice.id)
+				delete_confirm.popup_centered())
+			header.add_child(remove)
 		card.add_child(_label(str(notice.get("content", "")), 15))
 		card.add_child(HSeparator.new())
 
+func _render_whispers(history: Array) -> void:
+	if whisper_cards.has_meta("history") and whisper_cards.get_meta("history") == history:
+		return
+	whisper_cards.set_meta("history", history)
+	for child in whisper_cards.get_children():
+		whisper_cards.remove_child(child)
+		child.queue_free()
+	if history.is_empty():
+		whisper_cards.add_child(_label("暂无悄悄话。", 15))
+	for row: Dictionary in history:
+		whisper_cards.add_child(_label("%s · %s · %s" % [_timestamp(float(row.game_time)), row.npc, row.action], 13))
+		whisper_cards.add_child(_label(str(row.text), 15))
+		whisper_cards.add_child(HSeparator.new())
+
+func _timestamp(at: float) -> String:
+	var minutes := maxi(0, int(at))
+	return "第 %d 天 %02d:%02d" % [int(minutes / 1440) + 1, int((minutes % 1440) / 60), minutes % 60]
+
 func _update_buttons() -> void:
-	var available := ApiClient.backend_online and not pending and not board_id.is_empty()
-	refresh_button.disabled = not available
-	publish_button.disabled = not available or title_edit.text.strip_edges().is_empty() or content_edit.text.strip_edges().is_empty() or content_edit.text.length() > 500
+	var connected := ApiClient.backend_online and not board_id.is_empty()
+	var available := connected and (not pending or operation in ["load", "history"])
+	stage_button.disabled = not connected or stage_pending or (pending and operation == "reset") or ApiClient.last_world.get("social", {}).get("world_id", "") == ""
+	var whisper := whisper_edit.text.strip_edges()
+	whisper_button.disabled = not available or source_picker.item_count == 0 or whisper.is_empty() or whisper.length() > 500
+	reset_button.disabled = not available or stage_pending or ApiClient.last_world.get("social", {}).get("world_id", "") == ""
+	publish_button.disabled = not available or content_edit.text.strip_edges().is_empty() or content_edit.text.length() > 500
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if visible and event.is_action_pressed("ui_cancel"):
-		hide()
+		if stage_selecting:
+			_set_stage_selection(false)
+		else:
+			hide()
 		get_viewport().set_input_as_handled()

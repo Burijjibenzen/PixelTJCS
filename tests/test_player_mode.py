@@ -72,6 +72,78 @@ class PlayerModeTests(unittest.TestCase):
                             for e in self.s.bus.history()))
         self.assertTrue(self.s.available(self.a,self.b))
 
+    def test_nearby_npc_can_overhear_player_conversation(self):
+        session=self.join()
+        self.s.player.engage(session,self.a)
+        turn=self.send(session=session,message='我想谈一下实验里的异常。')
+        self.s.player.disengage(session)
+        self.s.hearing_pool.submit(lambda:None).result(timeout=5)
+        events=self.s.game_events.timeline(self.b)['events']
+        witness,=[event for event in events if event['kind']=='conversation_overheard']
+        self.assertTrue(witness['source_event_id'].startswith('player:'))
+        self.assertIn(turn['message'],witness['result']['detail'])
+        self.assertIn(turn['reply'],witness['result']['detail'])
+        self.assertFalse(any(event['kind']=='conversation_overheard' for event in self.s.game_events.timeline(self.a)['events']))
+
+    def test_cast_exit_interrupts_pending_player_reply_without_late_writes(self):
+        session=self.join()
+        self.s.player.engage(session,self.a)
+        speaking,answer=threading.Event(),threading.Event()
+
+        def reply(*_):
+            speaking.set()
+            if not answer.wait(5):
+                raise AssertionError('test did not release model')
+            return '过期回复'
+
+        with patch.object(self.s.npcs[self.a],'speak',side_effect=reply):
+            turn=self.s.player.submit(session,self.a,'你好','cast')
+            future=self.s.player.jobs[turn['id']]
+            try:
+                self.assertTrue(speaking.wait(5))
+                self.s.set_cast(self.a,False)
+                self.assertIsNone(self.s.player.state(session)['engaged_npc'])
+                self.assertIsNone(self.s.player.state(session)['pending_turn'])
+                self.assertNotIn(self.a,self.s.busy)
+                self.s.set_cast(self.a,True)
+            finally:
+                answer.set()
+            future.result(timeout=5)
+        result=self.s.player.turn(session,turn['id'])
+        self.assertEqual(('failed',None,{}),(result['status'],result['reply'],result['memories']))
+        event=next(row for row in self.s.game_events.timeline(self.a)['events'] if row['kind']=='player_conversation')
+        self.assertEqual('cancelled',event['result']['status'])
+
+    def test_whisper_interrupts_active_player_conversation(self):
+        from backend.agent_runtime import WhisperAction
+
+        session=self.join()
+        self.s.player.engage(session,self.a)
+        speaking,answer=threading.Event(),threading.Event()
+
+        def reply(*_):
+            speaking.set()
+            if not answer.wait(5):
+                raise AssertionError('test did not release model')
+            return '过期回复'
+
+        with patch.object(self.s.npcs[self.a],'speak',side_effect=reply):
+            turn=self.s.player.submit(session,self.a,'你好','whisper')
+            future=self.s.player.jobs[turn['id']]
+            try:
+                self.assertTrue(speaking.wait(5))
+                with self.s.lock:
+                    command=self.s.planner.whisper(self.a,WhisperAction(type='stay'))
+                    self.s.planner.tick(time.monotonic(),0)
+                self.assertIs(command,self.s.planner.current_item(self.a))
+                self.assertIsNone(self.s.player.state(session)['engaged_npc'])
+            finally:
+                answer.set()
+            future.result(timeout=5)
+        result=self.s.player.turn(session,turn['id'])
+        self.assertEqual(('failed',None,{}),(result['status'],result['reply'],result['memories']))
+        self.assertIn('接管',result['error'])
+
     def test_engagement_expires_after_abandoned_window(self):
         session=self.join()
         self.s.player.engage(session,self.a)
@@ -82,14 +154,14 @@ class PlayerModeTests(unittest.TestCase):
     def test_server_checks_fresh_player_and_npc_distance_for_engage_and_chat(self):
         session=self.join()
         room=AREAS[self.area]
-        self.s.player.report_position(session,room['map_id'],room['room_id'],1000,1000)
+        self.s.player.report_position(session,room['map_id'],room['room_id'],97,0)
         with self.assertRaises(PlayerError):self.s.player.engage(session,self.a)
         with self.assertRaises(PlayerError):self.s.player.submit(session,self.a,'远处消息','far')
-        self.s.player.report_position(session,room['map_id'],room['room_id'],0,0)
+        self.s.player.report_position(session,room['map_id'],room['room_id'],96,0)
         self.s.positions[self.a]['at']=time.monotonic()-SOCIAL.position_max_age_seconds-1
         with self.assertRaises(PlayerError):self.s.player.engage(session,self.a)
         self.s.report_arrival(self.a,map_id=room['map_id'],room_id=room['room_id'],x=0,y=0)
-        self.s.player.engage(session,self.a)
+        self.assertEqual(self.a,self.s.player.engage(session,self.a)['engaged_npc'])
         self.s.player.position['at']=time.monotonic()-SOCIAL.position_max_age_seconds-1
         with self.assertRaises(PlayerError):self.s.player.submit(session,self.a,'过期消息','stale')
 
@@ -155,6 +227,8 @@ class PlayerModeTests(unittest.TestCase):
 
     def test_real_context_contains_previous_reply_without_other_npc_dialogue(self):
         session = self.join()
+        room=AREAS[self.area]
+        self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=151,y=0)
         calls = []
         def reply(system, user, **kw):
             calls.append(user)
@@ -162,6 +236,7 @@ class PlayerModeTests(unittest.TestCase):
         with patch.object(self.s.llm, 'chat', side_effect=reply):
             self.send(message='仅告诉甲的研究线索', session=session, request='one')
             self.send(message='刚才你说的是什么意思', session=session, request='two')
+            self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=0,y=0)
             self.send(message='另一位你好', npc=self.b, session=session, request='three')
         self.assertIn('第一位角色的独有答复', calls[1])
         self.assertIn('仅告诉甲的研究线索', calls[1])
@@ -171,7 +246,9 @@ class PlayerModeTests(unittest.TestCase):
     def test_duplicate_requests_and_relation_effect_are_exactly_once(self):
         session = self.join();player = self.s.player.state()['player']['id']
         impact = PlayerRelationImpact(delta=3, reason='认真回应了研究建议')
-        with patch.object(self.s.llm, 'chat_json', return_value=impact), patch.object(self.s.npcs[self.a], 'speak', return_value='好建议') as speak:
+        def model(_system, _prompt, schema, **kwargs):
+            return impact if schema is PlayerRelationImpact else None
+        with patch.object(self.s.llm, 'chat_json', side_effect=model), patch.object(self.s.npcs[self.a], 'speak', return_value='好建议') as speak:
             first = self.send(session=session)
             room=AREAS[self.area]
             self.s.player.report_position(session,room['map_id'],room['room_id'],1000,1000)
@@ -261,7 +338,9 @@ class PlayerModeTests(unittest.TestCase):
 
     def test_invalid_relation_assessment_uses_explicit_neutral_fallback(self):
         session = self.join()
-        with patch.object(self.s.llm,'chat_json',return_value={'delta':float('nan'),'reason':'无效'}):
+        def model(_system, _prompt, schema, **kwargs):
+            return {'delta':float('nan'),'reason':'无效'} if schema is PlayerRelationImpact else None
+        with patch.object(self.s.llm,'chat_json',side_effect=model):
             item = self.send(session=session)
         self.assertEqual('completed',item['status'])
         self.assertEqual(0,item['relation']['delta'])

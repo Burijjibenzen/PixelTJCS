@@ -16,6 +16,16 @@ func stair(viewer, id: String) -> Dictionary:
 			return item
 	return {}
 
+func enter(viewer, tile: Vector2i, from: Vector2i, key: Key) -> void:
+	viewer.walk_cell = tile + from
+	var event := InputEventKey.new()
+	event.keycode = key
+	event.pressed = true
+	root.push_input(event)
+	viewer._process(0.2)
+	event.pressed = false
+	root.push_input(event)
+
 func verify() -> void:
 	root.get_node("ApiClient").set_process(false)
 	var game := root.get_node("Game")
@@ -25,26 +35,22 @@ func verify() -> void:
 	viewer.bar.get_node("Walk").button_pressed = true
 	var j3_entry: Vector2i = game.stair_entry(game.FLOOR3, "stair_west")
 	var zx_entry: Vector2i = game.stair_entry(game.ZHIXING, "zx2_stair_w")
-	viewer.show_floor(0, j3_entry)
-	viewer._use(stair(viewer, "stair_west"))
-	if not check(viewer.stair_options.size() == 2 and viewer.stair_menu.visible, "three-floor west stair offers upstairs and campus passage"): return
-	var campus_index := -1
-	for index in viewer.stair_options.size():
-		if viewer.stair_options[index].map_id == game.ZHIXING:
-			campus_index = index
-	if not check(campus_index >= 0, "campus passage option exists"): return
-	viewer.stair_menu.id_pressed.emit(campus_index)
+	var entries: Dictionary = game.floor_data[game.FLOOR3].walk_stairs
+	var campus: Vector2i = entries.keys().filter(func(cell: Vector2i) -> bool: return entries[cell].map_id == game.ZHIXING)[0]
+	if not check(campus != j3_entry and viewer.walk_starts.has(campus), "west campus passage has a separate reachable entry tile"): return
+	enter(viewer, campus, Vector2i.RIGHT, KEY_LEFT)
 	if not check(viewer.current_floor == 2 and viewer.walk_cell == zx_entry and viewer.can_walk(zx_entry) and viewer.walker.visible, "Jishi floor3 west to Zhixin floor2 west lands on walkable stair entry"): return
-	viewer._use(stair(viewer, "zx2_stair_w"))
+	viewer._process(0.2)
+	if not check(viewer.current_floor == 2, "standing on the arrival tile does not bounce back"): return
+	enter(viewer, zx_entry, Vector2i.RIGHT, KEY_LEFT)
 	if not check(viewer.current_floor == 0 and viewer.walk_cell == j3_entry and viewer.can_walk(j3_entry), "Zhixin west returns to Jishi floor3 west"): return
-	viewer._use(stair(viewer, "stair_west"))
-	viewer.stair_menu.id_pressed.emit(0)
+	enter(viewer, j3_entry, Vector2i.LEFT, KEY_RIGHT)
 	if not check(viewer.current_floor == 1, "original west stair still reaches floor4"): return
-	viewer._use(stair(viewer, "stair_west"))
+	enter(viewer, game.stair_entry(game.FLOOR4, "stair_west"), Vector2i.LEFT, KEY_RIGHT)
 	if not check(viewer.current_floor == 0, "original west stair still returns to floor3"): return
-	viewer._use(stair(viewer, "stair_east"))
+	enter(viewer, game.stair_entry(game.FLOOR3, "stair_east"), Vector2i.LEFT, KEY_RIGHT)
 	if not check(viewer.current_floor == 1, "original east stair still reaches floor4"): return
-	viewer._use(stair(viewer, "stair_east"))
+	enter(viewer, game.stair_entry(game.FLOOR4, "stair_east"), Vector2i.LEFT, KEY_RIGHT)
 	if not check(viewer.current_floor == 0, "original east stair still returns to floor3"): return
 	viewer.show_floor(2)
 	viewer._use(stair(viewer, "zx2_stair_ne"))

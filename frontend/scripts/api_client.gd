@@ -6,6 +6,7 @@ extends Node
 signal online_changed(online: bool)
 signal advance_done            # 快进请求成功(下一轮轮询自然刷新目标)
 signal speed_changed
+signal actor_stage_changed(npc: NPC)
 signal control_error(message: String)
 
 const BACKEND := "http://127.0.0.1:8000"
@@ -25,6 +26,10 @@ var simulation_paused := false
 var _clock_initialized := false
 var _clock_correction := 0.0
 var last_world := {}         # 最近一次 /world 快照(日程面板数据源)
+var world_id := ""
+var _previous_world_id := ""
+var _cast_epoch := ""
+var _initial_world := {}
 
 var _npcs: Array = []        # main.gd 装配后注入的 NPC 引用
 var _poll_timer := 0.5       # 开局稍等场景就绪
@@ -61,6 +66,16 @@ func _ready() -> void:
 ## main.gd 生成 NPC 后注入引用
 func setup(npcs: Array) -> void:
 	_npcs = npcs
+	if not _initial_world.is_empty():
+		_place_initial_npcs(_initial_world)
+		_initial_world.clear()
+
+func _place_initial_npcs(data: Dictionary) -> void:
+	for npc in _npcs:
+		if is_instance_valid(npc):
+			var info: Dictionary = data.npcs.get(npc.npc_name, {})
+			if Game.has_room(info.get("map_id", ""), info.get("room_id", "")):
+				npc.reset_to(info.map_id, info.room_id)
 
 
 func _process(delta: float) -> void:
@@ -98,6 +113,8 @@ func _on_poll(result: int, code: int, _headers: PackedStringArray,
 			# M3: 断线释放后端锁，本地气泡自行结束。
 			for npc in _npcs:
 				npc.social_busy = false
+				npc.hold_position(false)
+				npc.encounter_wait = ""
 			backend_online = false
 			print("[ApiClient] 后端不可达(连续 %d 次), 回退本地演示日程" % FAIL_LIMIT)
 			online_changed.emit(false)
@@ -117,6 +134,35 @@ func apply_stream_world(data: Dictionary) -> void:
 func _apply_world(data: Dictionary) -> void:
 	_fail_count = 0
 	var social: Dictionary = data.get("social", {})
+	var next_world: String = social.get("world_id", "")
+	if not next_world.is_empty():
+		if next_world == _previous_world_id:
+			return
+		if not world_id.is_empty() and next_world != world_id:
+			_previous_world_id = world_id
+			_http.cancel_request()
+			_http_post.cancel_request()
+			_http_adv.cancel_request()
+			_polling = false
+			_speed_pending = false
+			_sending_position.clear()
+			_confirmed_positions.clear()
+			_pending_positions.clear()
+			_point_targets.clear()
+			_clock_initialized = false
+			_clock_correction = 0.0
+			_place_initial_npcs(data)
+			if FileAccess.file_exists("user://roamchestra-player.cfg"):
+				ConfigFile.new().save("user://roamchestra-player.cfg")
+			if get_tree().current_scene != null:
+				_initial_world = data.duplicate(true)
+				get_tree().paused = false
+				get_tree().reload_current_scene.call_deferred()
+		world_id = next_world
+	var next_epoch: String = social.get("epoch", _cast_epoch)
+	var new_epoch := next_epoch != _cast_epoch
+	_cast_epoch = next_epoch
+	var previous_world := last_world
 	position_report_interval = clampf(float(social.get("position_report_seconds", 0.25)), 0.1, 1.0)
 	base_speed = float(social.get("base_speed", BASE_SPEED))
 	simulation_speed = float(social.get("speed", BASE_SPEED))
@@ -143,8 +189,31 @@ func _apply_world(data: Dictionary) -> void:
 		var info: Dictionary = data["npcs"].get(npc.npc_name, {})
 		if info.is_empty():
 			continue
-		# M3: 只同步忙碌状态，移动仍使用原有寻路接口。
+		var version := int(info.get("cast_version", npc.cast_version))
+		if not new_epoch and version < npc.cast_version:
+			data.npcs[npc.npc_name] = previous_world.get("npcs", {}).get(npc.npc_name, info)
+			continue
+		npc.cast_version = version
+		var on_stage := bool(info.get("on_stage", npc.on_stage))
+		if npc.on_stage != on_stage:
+			if not on_stage and new_epoch:
+				npc.reset_to(info.map_id, info.room_id)
+			npc.on_stage = on_stage
+			npc.visible = on_stage
+			npc.social_busy = false
+			_pending_positions.erase(npc.npc_name)
+			_confirmed_positions.erase(npc.npc_name)
+			actor_stage_changed.emit(npc)
+		if not npc.on_stage:
+			continue
 		npc.social_busy = bool(info.get("busy", false))
+		npc.hold_position(bool(info.get("hold_position", false)))
+		npc.encounter_wait = str(info.get("encounter_wait", ""))
+		if npc.position_held:
+			_point_targets.erase(npc.npc_name)
+		if npc.movement_locked():
+			report_arrival(npc)
+			continue
 		var target_map := str(info.get("target_map_id", Game.FLOOR3))
 		var target_room := str(info.get("target_room_id", info.get("target_grid", "")))
 		var point: Dictionary = info.get("target_position", {})
@@ -185,21 +254,30 @@ func _refresh_clock_text() -> void:
 func set_speed(multiplier: float) -> void:
 	if not backend_online:
 		simulation_speed = multiplier
-		simulation_paused = false
 		speed_changed.emit()
 		return
+	_send_world_control("/world/speed", {"speed": multiplier})
+
+func set_paused(value: bool) -> void:
+	if not backend_online:
+		simulation_paused = value
+		speed_changed.emit()
+		return
+	_send_world_control("/world/speed", {"paused": value})
+
+func _send_world_control(path: String, payload: Dictionary) -> void:
 	if _speed_pending:
 		return
 	_speed_pending = true
-	var error := _http_adv.request(backend_url + "/world/speed", ["Content-Type: application/json"], HTTPClient.METHOD_POST,
-		JSON.stringify({"speed": multiplier, "paused": false}))
+	var error := _http_adv.request(backend_url + path, ["Content-Type: application/json"], HTTPClient.METHOD_POST,
+		JSON.stringify(payload))
 	if error != OK:
 		_speed_pending = false
-		control_error.emit("倍速切换失败，请稍后重试")
+		control_error.emit("时间控制请求未能发送")
 
 
 func report_arrival(npc, refresh := false) -> void:
-	if not backend_online:
+	if not backend_online or not npc.on_stage:
 		return
 	var room := Game.room_id_at(npc.global_position, npc.map_id)
 	var info: Dictionary = last_world.get("npcs", {}).get(npc.npc_name, {})
@@ -209,6 +287,11 @@ func report_arrival(npc, refresh := false) -> void:
 	var local_position: Vector2 = npc.global_position - Game.map_offset(npc.map_id)
 	item["x"] = snappedf(local_position.x, 0.1)
 	item["y"] = snappedf(local_position.y, 0.1)
+	item["cast_version"] = npc.cast_version
+	if not npc.encounter_wait.is_empty():
+		item["encounter_wait"] = npc.encounter_wait
+	if not world_id.is_empty():
+		item["world_id"] = world_id
 	if info.has("activity"):
 		item["activity_id"] = str(info.activity.get("id", ""))
 	if not info.has("target_map_id"):
@@ -239,7 +322,7 @@ func _pump_report() -> void:
 
 func _on_report_done(result: int, code: int, _headers: PackedStringArray,
 		body: PackedByteArray) -> void:
-	var response = JSON.parse_string(body.get_string_from_utf8())
+	var response = null if body.is_empty() else JSON.parse_string(body.get_string_from_utf8())
 	if result == HTTPRequest.RESULT_SUCCESS and code == 200 and not _sending_position.is_empty():
 		# busy 表示服务端本次没有处理位置；解除占用后仍需重报，不能缓存为已确认。
 		if not response is Dictionary or response.get("detail", "") != "busy":
@@ -250,15 +333,9 @@ func _on_report_done(result: int, code: int, _headers: PackedStringArray,
 
 # 指定时长的连续快进，保留给演示控制；界面日常操作使用 set_speed。
 func advance_time(minutes: int) -> void:
-	if not backend_online or _speed_pending:
+	if not backend_online:
 		return
-	_speed_pending = true
-	var body := JSON.stringify({"minutes": minutes})
-	print("[ApiClient] 快进 %d 游戏分钟..." % minutes)
-	if _http_adv.request(backend_url + "/world/advance",
-		["Content-Type: application/json"], HTTPClient.METHOD_POST, body) != OK:
-		_speed_pending = false
-		control_error.emit("快进请求未能发送")
+	_send_world_control("/world/advance", {"minutes": minutes})
 
 
 func _on_advance_done(result: int, code: int, _headers: PackedStringArray,

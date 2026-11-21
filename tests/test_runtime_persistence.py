@@ -1,6 +1,7 @@
 """运行中的增长边界和服务重启后的世界事实。"""
 import time
 import unittest
+from unittest.mock import patch
 
 import test_social as fixtures
 from backend.event_stream import EventStream
@@ -11,6 +12,14 @@ from backend.world import AREAS
 class RuntimePersistenceTests(unittest.TestCase):
     setUp = fixtures.SocialTests.setUp
     tearDown = fixtures.SocialTests.tearDown
+
+    def test_recall_mixed_embedding_dimensions_keeps_keyword_relevance(self):
+        with patch.object(self.s.llm, 'embed', side_effect=[[[1.0, 0.0]], [[0.0, 0.8, 0.6]], [[0.0, 1.0, 0.0]]]):
+            now = self.s.world.clock.now
+            original = self.s.memory.add(self.a, '研究计划', 'observation', 0.5, now)
+            self.s.memory.add(self.a, '关于气象的闲聊', 'observation', 0.5, now)
+            matches = self.s.memory.recall(self.a, '研究计划', now)
+        self.assertEqual(original.id, matches[0].id)
 
     def test_restart_restores_actual_room_and_chat_cooldown(self):
         other = next(area for area in AREAS if AREAS[area]['id'] != AREAS[self.area]['id'])

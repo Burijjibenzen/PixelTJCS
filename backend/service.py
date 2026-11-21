@@ -21,6 +21,16 @@ from backend.world import AREAS, ROOMS, World
 
 log = get_logger(__name__)
 
+ROUTINE_ACTIVITIES = {
+    'j3_lab': '推进科研',
+    'j4_lab': '推进科研',
+    'j3_pantry': '休息',
+    'j4_meeting': '参加组会',
+    'jishilou_floor3/R09': '休息',
+    'zhixinguan_floor2/zx2_lib': '查阅资料',
+    'zx4_hall': '在走廊活动',
+}
+
 
 class GameService:
     """持有并初始化全部子系统；对外提供高层动作（对话/时间推进/查询）。"""
@@ -49,7 +59,7 @@ class GameService:
 
         # 4) 构造 NPC Agent 与对话引擎
         self.npcs: Dict[str, NPCAgent] = {
-            name: NPCAgent(card, self.world, self.llm, self.memory)
+            name: NPCAgent(card, self.world, self.llm, self.memory, self.relations)
             for name, card in self.cards.items()
         }
         self.engine = ConversationEngine(
@@ -142,7 +152,12 @@ class GameService:
         profile["location"] = location(current.get("area"))
         target = ROOMS.get((current.get("target_map_id"), current.get("target_room_id")), {})
         profile["destination"] = location(target.get("id"))
-        profile["schedule"] = [{"time": at, "location": location(area)}
+        routine = dict(ROUTINE_ACTIVITIES,
+                       zx4_yan='请教导师' if card.role == 'student' else '办公科研',
+                       zx4_wen='请教导师' if card.role == 'student' else '办公科研',
+                       zx4_qian='处理教务' if card.role == 'staff' else '办理教务')
+        profile["schedule"] = [{"time": at, "location": location(area),
+                                "activity": routine.get(area, "日常安排")}
                                for at, area in sorted(profile["schedule"].items())]
         profile["game_time"] = snapshot["time"]
         return profile

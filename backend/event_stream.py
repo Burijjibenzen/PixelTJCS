@@ -71,6 +71,12 @@ class EventStream:
         with self.lock:
             self.clients.pop(queue, None)
 
+    def notify_world_reset(self,snapshot):
+        with self.lock:
+            for queue,loop in self.clients.items():
+                if not loop.is_closed():
+                    loop.call_soon_threadsafe(self.deliver,queue,{'kind':'world_reset','world':snapshot})
+
     def history(self, after=0, limit=200):
         with self.db() as db:
             return [self.decode(r) for r in db.execute(

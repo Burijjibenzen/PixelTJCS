@@ -3,7 +3,7 @@
 > 写给接手项目的同学/队友。读完本文档，你应当能独立跑通系统、看懂每个
 > 模块在干什么、并且知道往哪里加新功能。
 > 配套阅读: `docs/DESIGN.md`（需求与设计）、`docs/MAP_SPEC.md`（地图格式规范）、
-> `README.md`（快速开始）。
+> `README.md`（快速开始）。M6 的事件生命周期、调度、旁听和上帝模式见 [M6 交接说明](M6.md)。
 
 ## 1. 项目一句话
 
@@ -15,7 +15,7 @@
 |---|---|---|
 | 人格卡系统（10 张） | ✅ | `personas/*.json` |
 | 公开人格卡与可视化资料页 | ✅ | `GET /npcs/{name}/profile`、`persona_panel.gd`；秘密字段不进入公开响应，详见 `M4.1.md` |
-| 公告栏发布、查看与NPC阅读 | ✅ | `noticeboards.py`、`notice_board.gd`；地图点击与顶部按钮，见本文第15节 |
+| 公告栏发布、查看与 NPC 阅读 | ✅ | `noticeboards.py`、`notice_board.gd`；地图点击与上帝模式入口，见 [M6](M6.md#3-公告旁听与角色记忆) |
 | NPC↔NPC 多轮对话 | ✅ | `POST /conversation`、`run_demo.py` |
 | 记忆写入 + 向量检索 | ✅ | `backend/memory.py` |
 | 遗忘三机制（衰减/淘汰/反思） | ✅ | `GameService.advance_time()` |
@@ -26,8 +26,14 @@
 | NPC 自由移动 | 三层地图支持楼内、跨层及跨馆寻路 | `frontend/scripts/npc.gd` |
 | 前端↔后端联动（/world 驱动移动 + 位置上报） | ✅ M2.2 | `frontend/scripts/api_client.gd` + `POST /world/report`（§12 第 7 条） |
 | LangGraph 编排迁移 | ✅ M3 | `scheduler.py` / `agent_runtime.py` / `conversation.py`，详见 `M3.md` |
+| 结构化事件与当前活动 | ✅ M6 | `backend/game_events.py`、`backend/event_runtime.py`；角色时间线和活动因果关系 |
+| 三档调度、邀约与跟踪 | ✅ M6 | `backend/activity_priority.py`、`backend/daily_planner.py`、`backend/scheduler.py` |
+| 旁听与个人回忆 | ✅ M6 | `backend/social.py`、`backend/npc.py`；按实际位置听取台词，分别形成记忆 |
+| 角色状态栏与上帝模式 | ✅ M6 | `frontend/scripts/character_status.gd`、`frontend/scripts/notice_board.gd` |
 
 ## 3. 快速开始
+
+Windows 先在仓库根目录创建 `.venv` 并安装依赖，再双击 [Start-Roamchestra.bat](../Start-Roamchestra.bat)。后端健康检查通过后脚本会启动 Godot。 [路径配置和联调步骤](M6.md#5-启动和验收)
 
 ```bash
 # 1) 环境: Python 3.11（3.10+ 均可）
@@ -244,16 +250,16 @@ NPC 收到目标后，先走到可达的楼梯落脚点，在另一层的对应�
 | 按键 | 功能 |
 |---|---|
 | 滚轮 | 缩放（0.8~5 倍） |
-| **方向键** | 镜头平移（越放大移得越慢；**WASD 保留给 M4 玩家实体**） |
+| **鼠标左键拖动地图** | 平移镜头，拖动超过阈值后取消对人物或告示栏的点击。 |
+| **WASD／方向键、E、P** | 玩家模式下行走、近距离交互、回到玩家镜头。踩楼梯箭头即可换层。 |
 | **1 / 2 / 3** | 切换观察济事楼三楼、四楼或智信馆二楼。 |
 | 空格 | 循环跟随 10 个 NPC，角色转场时镜头随它切换楼层。 |
 | 鼠标左键点击人物或姓名 | 跟随该人物，同时展开社交观察并切换到其角色资料；面板内操作不会点中背后的人物。 |
-| 鼠标左键拖动社交观察标题栏 | 移动观察面板；收起再展开保留位置，可用标题栏右侧按钮收起。 |
+| 功能窗口标题栏 | 拖动窗口。再次点击入口或点 X 关闭。 |
 | Esc | 取消跟随 |
 | **F3 或 V** | 显示当前楼层的房间地板、名称、门口标记和 NPC 当前行走段的目标（部分笔记本 F 键默认是多媒体键，按 Fn+F3 或直接按 V） |
-| **快进1小时 / 快进4小时**（右下角按钮） | 连续加速指定游戏时长，抵达目标后恢复原速度；后端未连接时禁用 |
-| **快进3天**（社交观察面板） | 连续推进4320游戏分钟，默认约72现实秒；自动恢复原速度并补做最终遗忘维护 |
-| **倍速选择** | 原速为现实1秒=游戏10分钟；时钟、移动与动画同步按1/2/4/6倍运行 |
+| **快进 1 小时／4 小时／3 天**（右上角） | 连续加速指定游戏时长，完成后恢复原倍率并触发维护。定时快进需连接后端。 |
+| **暂停和倍速选择**（右上角） | 原速为现实 1 秒对应游戏 10 分钟，时钟、移动与动画支持 ×1／×2／×4／×6。暂停时冻结游戏时钟和 NPC 对话进度。 |
 
 离线可跟随周冲从三楼东侧机房前往四楼学术讲座教室。打开区域调试后，可以看到角色先走到楼梯，到四楼后再走向教室。也可以观察智信馆二楼图书分馆的到达效果。
 
@@ -305,14 +311,18 @@ run_demo.py
 | GET | `/health` | 健康检查 |
 | GET | `/world` | 世界快照（时间/全员位置/最近事件）；每个 NPC 带有当前位置 `map_id` / `room_id` 与目的地 `target_map_id` / `target_room_id` |
 | GET | `/npcs` | 角色名单（身份/性格/位置） |
-| GET | `/npcs/{name}/profile` | 公开人格、目标、地点和日程；字段白名单，不含秘密和内部关系配置；未知角色404 |
+| GET | `/npcs/{name}/profile` | 公开人格、目标、地点和基础日程。每个日程项含时间、地点及活动短语。字段使用白名单，未知角色返回 404 |
 | GET | `/npcs/{name}/activities` | 当前活动/原因/状态和最近20项安排，详情见动态日程交接 |
 | POST | `/npcs/{name}/activities/{id}/cancel` | 取消活动；已经开始处理的会面返回409 |
+| GET | `/npcs/{name}/timeline` | 角色已知的事件，支持 `before` 游标和 `limit`，默认每页 30 条 |
 | GET | `/npcs/{name}/memory` | ★个人记忆面板: `active`/`forgotten`/`reflections` 三视图 |
 | GET | `/relations` | 全员关系矩阵（0~100，None=陌生人） |
 | GET | `/areas` | 区域地图 |
 | POST | `/conversation` | ★触发 NPC↔NPC 对话 `{a, b, trigger}` |
 | POST | `/world/advance` | ★连续快进 `{minutes, speed?}`（三天=4320，speed默认60游戏分钟/现实秒），完成后恢复原速并补做维护；请求返回不表示已经到达 |
+| POST | `/world/speed` | 以 `{paused?, speed?}` 更新暂停或倍速，`speed` 的单位是游戏分钟／现实秒 |
+| POST | `/world/cast` | `{npc, on_stage, world_id}`，让指定 NPC 退场或出演 |
+| POST | `/world/reset` | `{world_id, confirm: true}`，清空当前运行数据并重新初始化世界 |
 | POST | `/world/goto` | 指派目的地 `{npc, map_id, room_id}`，也接受原有的 `{npc, area}`。当前地点随实际走动更新 |
 | POST | `/world/report` | 上报实际位置 `{npc, map_id, room_id, arrived?, activity_id?, x?, y?}`；坐标为地图内像素，区分路过与完整到达，兼容旧客户端 |
 | POST | `/chat` | 同步兼容入口，玩家须先加入；`{npc, message, session_id?, request_id?}`，完整结果见第16节 |
@@ -320,8 +330,11 @@ run_demo.py
 | POST / GET | `/player/chat`、`/player/turns/{turn_id}` | 异步提交一轮对话（202）及查询处理结果，不等待模型阻塞HTTP |
 | GET | `/player/history`、`/player/memory` | 本人会话历史、活跃/遗忘记忆，均需`session_id` |
 | GET | `/noticeboards` | 三张地图中的真实公告栏、位置与编号 |
-| GET / POST | `/noticeboards/{board_id}/notices` | 查看或发布公告，字段 `title`、`content`；发布不写NPC记忆 |
-| POST | `/noticeboards/{board_id}/read` | `{npc}` 调试阅读请求，可等待当前任务结束；游戏内默认自动阅读，完成后才获得观察记忆 |
+| GET / POST | `/noticeboards/{board_id}/notices` | 查看或发布公告，发布只需要正文 `content`（最多 500 字）。NPC 实际读完后才形成记忆 |
+| DELETE | `/noticeboards/{board_id}/notices/{notice_id}` | 从公告栏撤下公告，已获得的记忆和历史事件仍保留 |
+| POST | `/noticeboards/{board_id}/read` | `{npc}` 调试阅读请求。须在同层走廊的发现范围内，实际走到板前站定才开始阅读 |
+| GET | `/world/whisper/history` | 当前世界已下达的悄悄话列表，包括原文、接收者、下达时间及解析出的活动 |
+| POST | `/world/whisper` | `{npc, text}`，将自然语言解析为高档活动并返回已生成的安排 |
 
 前端可视化遗忘面板的数据源就是 `/npcs/{name}/memory` 的 `forgotten` 数组
 （含 `forget_reason` 字段: strength_decay=时间衰减 / capacity_evict=容量淘汰）。
@@ -414,14 +427,16 @@ fastapi/uvicorn（接口）、openai（SDK）、pydantic（校验）、python-do
 | 对话被拦截"冷却中" | 同一对 NPC 120 游戏分钟内不能重聊 → `advance_time` 或改 `WORLD.cooldown_minutes` |
 | pip 装包慢/失败 | 校园网代理问题 → `pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt` |
 | git push 走代理失败 | 全局代理已设 7897（Clash Verge）；`github.com` 可用，`git.tongji.edu.cn` 建议单独禁代理 |
-| 想重置世界 | 先停止服务并备份，再显式清空数据库；HTTP默认保留数据，CLI演示的`fresh_db=True`会清库，不要与HTTP同时运行 |
+| 想重置世界 | 在「上帝模式」中选择「重置世界」并确认。需要保留进度时先停机备份 `data/memory.db`。命令行演示的 `fresh_db=True` 也会清库，运行前先关闭 HTTP 后端。 |
 | Godot 打不开工程/弹升级提示 | 引擎版本与排错见 §7.5（"将修改为 Godot 4.7"弹窗点确认即可） |
 | Godot 运行报 SCRIPT ERROR | 看错误行的脚本名+行号；若是资源路径问题先删 `frontend/.godot/` 缓存重新导入 |
 | 前端看不到任何 NPC | 查 Output 面板是否打印 `[Main] 已生成 10 个 NPC`；没有则 `data/npc_roster.json` 路径/JSON 被改坏 |
 | 前端"已连接后端"但 NPC 不挪窝 | 查看日程的等待说明及 `/npcs/{name}/activities`：可能被对话/反思、前序会面或位置上报阻塞。基础作息翻段不会打断在途活动；同室闲逛正常，超时可检查路线或取消重排 |
 | room_id_at 等按数字键查字典查不到 | JSON 解析出的数字是 **float**，GDScript 字典里 `3.0` 和 `3` 是不同键——跨 JSON/代码的数字键必须显式 `int()`（M2.2 实际踩坑，详见 game_data.gd `room_id_at` 注释） |
 
-## 14. 本轮接力的实现边界与复测
+## 14. 历史接力的实现边界与复测
+
+本节保留该轮接力的实现记录。当前气泡和人物占用规则、楼梯操作及复测入口以 [M6 说明](M6.md) 为准。
 
 - 参数仍以 `backend/config.py` 为入口；模型调用继续只经 `llm.py`，没有改写模型、记忆检索或遗忘算法。
 - HTTP维持薄路由：连续快进和状态切换放在 `SocialService`，调度循环放在 `Scheduler`；保持现有组件依赖方向。

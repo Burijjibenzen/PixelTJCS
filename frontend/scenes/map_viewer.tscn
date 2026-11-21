@@ -8,10 +8,11 @@ layer = 12
 script = ExtResource("1")
 
 [node name="Background" type="ColorRect" parent="."]
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-color = Color(0.09, 0.12, 0.15, 1)
+offset_left = 100.0
+offset_top = 88.0
+offset_right = 1180.0
+offset_bottom = 670.0
+color = Color(0.94, 0.91, 0.87, 1)
 
 [node name="Stage" type="ColorRect" parent="Background"]
 clip_contents = true
@@ -19,7 +20,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 offset_top = 52.0
 offset_bottom = -62.0
-color = Color(0.16, 0.20, 0.23, 1)
+color = Color(0.82, 0.77, 0.70, 1)
 
 [node name="World" type="Node2D" parent="Background/Stage"]
 
@@ -38,6 +39,10 @@ offset_top = 7.0
 offset_right = -12.0
 offset_bottom = 44.0
 theme_override_constants/separation = 12
+
+[node name="Title" type="Label" parent="Background/Toolbar"]
+custom_minimum_size = Vector2(120, 0)
+text = "楼层地图"
 
 [node name="Floor" type="OptionButton" parent="Background/Toolbar"]
 custom_minimum_size = Vector2(165, 0)
@@ -62,7 +67,8 @@ mouse_filter = 2
 
 [node name="Back" type="Button" parent="Background/Toolbar"]
 focus_mode = 0
-text = "返回模拟"
+text = "X"
+tooltip_text = "关闭"
 
 [node name="Status" type="Label" parent="Background"]
 anchor_top = 1.0
@@ -75,7 +81,7 @@ offset_bottom = -32.0
 text_overrun_behavior = 3
 
 [node name="Hint" type="Label" parent="Background"]
-modulate = Color(0.75, 0.82, 0.85, 1)
+modulate = Color(0.76, 0.67, 0.59, 1)
 anchor_top = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0

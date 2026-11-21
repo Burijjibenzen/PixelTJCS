@@ -9,6 +9,10 @@ const SPEED := 55.0
 
 # 后端处理与短暂离场停留期间暂停移动；气泡结束事件先于恢复行走。
 var social_busy := false
+var position_held := false
+var encounter_wait := ""
+var on_stage := true
+var cast_version := 0
 
 var npc_id := ""
 var npc_name := "?"
@@ -42,6 +46,28 @@ func setup(id: String, display_name: String, char_id: int, home: String, tint: C
 func is_travelling() -> bool:
 	return not _sections.is_empty()
 
+func movement_locked() -> bool:
+	return not on_stage or social_busy or position_held or not encounter_wait.is_empty()
+
+func hold_position(held: bool) -> void:
+	if held and not position_held:
+		_sections.clear()
+		goal_room = ""
+		_idle()
+	position_held = held
+
+func reset_to(floor_id: String, room: String) -> void:
+	_sections.clear()
+	_idle()
+	social_busy = false
+	position_held = false
+	encounter_wait = ""
+	map_id = floor_id
+	goal_map_id = floor_id
+	goal_room = room
+	global_position = Game.nav_world_of(room, floor_id)
+	reset_physics_interpolation()
+
 func hit_test(viewport_position: Vector2) -> bool:
 	# 按人物画面和姓名判断点击，不局限于脚下的小碰撞体；兼容镜头缩放。
 	var texture := sprite.sprite_frames.get_frame_texture(sprite.animation, sprite.frame)
@@ -70,6 +96,8 @@ func go_to(world_pos: Vector2) -> bool:
 	return false
 
 func _start_trip(target_map: String, rid: String, target: Vector2) -> bool:
+	if movement_locked():
+		return false
 	var planned := Game.route(map_id, global_position, target_map, target)
 	if planned.is_empty():
 		return false
@@ -78,6 +106,9 @@ func _start_trip(target_map: String, rid: String, target: Vector2) -> bool:
 	_sections = planned
 	_section_i = 0
 	_start_section()
+	if path.size() > 1 and (global_position - path[0]).dot(path[1] - path[0]) > 0.0:
+		if not test_move(global_transform, path[1] - global_position):
+			path_i = 1
 	return true
 
 func _start_section() -> void:
@@ -90,7 +121,7 @@ func _physics_process(delta: float) -> void:
 	var rate := ApiClient.time_scale()
 	sprite.speed_scale = rate
 	# M3: 不调用 _idle()，避免清掉正在行走的路线。
-	if social_busy or rate <= 0.0:
+	if movement_locked() or rate <= 0.0:
 		velocity = Vector2.ZERO
 		_play("idle")
 		return

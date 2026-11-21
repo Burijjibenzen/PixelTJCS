@@ -8,11 +8,13 @@
     http://127.0.0.1:8000/docs
 """
 
+import asyncio
 from threading import Lock
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.logger import get_logger
@@ -28,6 +30,8 @@ log = get_logger(__name__)
 # 全局单例: 进程内只装配一次世界
 _service: Optional[GameService] = None
 _service_lock = Lock()
+_resetting = False
+_active_requests = 0
 
 
 def get_service() -> GameService:
@@ -45,6 +49,19 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
     allow_methods=["*"], allow_headers=["*"]
 )
+
+@app.middleware("http")
+async def guard_world_reset(request,call_next):
+    global _active_requests
+    if request.url.path=="/world/reset":
+        return await call_next(request)
+    if _resetting:
+        return JSONResponse({'detail':'世界正在重置'},status_code=503)
+    _active_requests+=1
+    try:
+        return await call_next(request)
+    finally:
+        _active_requests-=1
 
 
 # ----------------------------------------------------------------------
@@ -76,8 +93,16 @@ class ReportReq(BaseModel):
     grid: Optional[str] = None
     arrived: Optional[bool] = None  # False 表示经过此房间，仍在行走
     activity_id: Optional[str] = None
+    encounter_wait: Optional[str] = None
+    cast_version: Optional[int] = None
     x: Optional[float] = Field(default=None,ge=-1000000,le=1000000,allow_inf_nan=False)
     y: Optional[float] = Field(default=None,ge=-1000000,le=1000000,allow_inf_nan=False)
+    world_id: Optional[str] = None
+
+
+class ResetReq(BaseModel):
+    confirm: Literal[True]
+    world_id: str
 
 
 class ChatReq(BaseModel):
@@ -129,6 +154,7 @@ class PublicGoals(BaseModel):
 class PublicScheduleEntry(BaseModel):
     time: str
     location: PublicLocation
+    activity: str = "日常安排"
 
 
 class PublicNPCProfile(BaseModel):
@@ -222,6 +248,44 @@ def advance_time(req: AdvanceReq):
     return get_service().fast_forward(req.minutes, req.speed)
 
 
+def initialize_world(previous):
+    with previous.database() as db:
+        db.execute('BEGIN IMMEDIATE')
+        tables=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
+        for name, in tables:
+            db.execute('DELETE FROM "'+name.replace('"','""')+'"')
+    return GameService(fresh_db=False)
+
+
+@app.post("/world/reset")
+async def reset_world(req: ResetReq):
+    global _resetting
+    if _resetting:
+        raise HTTPException(409,'世界正在重置')
+    previous=get_service()
+    if req.world_id!=previous.world_id:
+        raise HTTPException(409,'世界已经更新，请刷新后再试')
+    _resetting=True
+    return await asyncio.shield(replace_world(previous))
+
+
+async def replace_world(previous):
+    global _resetting,_service
+    try:
+        # 唤醒暂停中等待的请求，并等待本轮请求和后台工作全部退出再清库。
+        await asyncio.to_thread(previous.stop)
+        while _active_requests:
+            await asyncio.sleep(0.025)
+        replacement=await asyncio.to_thread(initialize_world,previous)
+        world=replacement.world_snapshot()
+        _service=replacement
+        previous.bus.notify_world_reset(world)
+        replacement.start()
+        return {'ok':True,'world':world}
+    finally:
+        _resetting=False
+
+
 @app.post("/world/goto")
 def goto(req: GotoReq):
     """设置目的地。实际位置由前端行走和到达上报更新。"""
@@ -243,7 +307,11 @@ def report_arrival(req: ReportReq):
     ⚠️ 决策（已确认）：不写记忆——防 10 人移动噪音；
     "同处一室"观察记忆由 M2.3 相遇/视野事件写入。
     """
-    ok, msg = get_service().report_arrival(req.npc, req.grid, req.map_id, req.room_id, req.arrived, req.activity_id, req.x, req.y)
+    s=get_service()
+    if req.world_id is not None and req.world_id!=s.world_id:
+        raise HTTPException(409,'忽略来自旧世界的位置上报')
+    ok, msg = s.report_arrival(req.npc, req.grid, req.map_id, req.room_id, req.arrived,
+                               req.activity_id, req.x, req.y, req.encounter_wait, req.cast_version)
     if not ok:
         raise HTTPException(400, msg)
     return {"ok": True, "npc": req.npc, "grid": req.grid, "map_id": req.map_id,

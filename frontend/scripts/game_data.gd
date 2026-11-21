@@ -42,7 +42,7 @@ func _ready() -> void:
 			"name": manifest.name, "origin": _cell(grid.origin), "size": astar.region.size,
 			"offset": next_offset, "astar": astar, "rooms": {}, "waypoint_rooms": {},
 			"room_by_cell": {}, "floor_cells": {}, "region_cells": {}, "door_cells": [],
-			"stairs": {}, "doors": [], "noticeboards": [],
+			"stairs": {}, "walk_stairs": {}, "doors": [], "noticeboards": [],
 		}
 		for room: Dictionary in manifest.rooms:
 			floor.rooms[room.id] = room
@@ -50,7 +50,7 @@ func _ready() -> void:
 				floor.waypoint_rooms[waypoint] = room.id
 		for obj: Dictionary in manifest.objects:
 			if obj.type == "notice":
-				floor.noticeboards.append({"id": map_id + ":" + str(obj.id), "object_id": obj.id, "map_id": map_id, "room_id": obj.room, "cells": obj.get("cells", [obj.cell]), "location": manifest.name + " · " + str(floor.rooms[obj.room].name)})
+				floor.noticeboards.append({"id": map_id + ":" + str(obj.id), "object_id": obj.id, "map_id": map_id, "room_id": obj.room, "cell": obj.cell, "cells": obj.get("cells", [obj.cell]), "location": manifest.name + " · " + str(floor.rooms[obj.room].name)})
 			if obj.type == "door":
 				floor.doors.append(obj)
 				for point in obj.get("passage_cells", obj.get("cells", [obj.cell])):
@@ -66,8 +66,21 @@ func _ready() -> void:
 func _connect_floors() -> void:
 	for map_id: String in MAP_IDS:
 		for stair: Dictionary in floor_data[map_id].stairs.values():
+			var entry := stair_entry(map_id, stair.id)
 			for destination: Dictionary in stair_destinations(map_id, stair.id):
-				_add_link(map_id, stair_entry(map_id, stair.id), destination.map_id, destination.cell)
+				_add_link(map_id, entry, destination.map_id, destination.cell)
+				var trigger := entry
+				var label := "上楼" if map_id == FLOOR3 else "下楼"
+				if destination.map_id == ZHIXING:
+					# 三楼西侧的另一个出口，避开楼内楼梯和抵达格。
+					trigger += Vector2i(-1, 3)
+					label = "智信馆"
+				elif map_id == ZHIXING:
+					label = "济事楼"
+				assert(not is_blocked(trigger, map_id))
+				floor_data[map_id].walk_stairs[trigger] = {
+					"map_id": destination.map_id, "cell": destination.cell, "label": label,
+				}
 
 
 func stair_entry(map_id: String, stair_id: String) -> Vector2i:
@@ -184,6 +197,22 @@ func room_name(rid: String, map_id: String = FLOOR3) -> String:
 
 func room_type(rid: String, map_id: String = FLOOR3) -> String:
 	return floor_data[map_id].rooms.get(actual_room(map_id, rid), {}).get("type", "room")
+
+func status_room_name(map_id: String, room_id: String) -> String:
+	var actual := actual_room(map_id, room_id)
+	if actual.is_empty() or room_type(actual, map_id) != "room":
+		return "走廊"
+	for stair: Dictionary in floor_data[map_id].stairs.values():
+		if stair.room == actual:
+			return "走廊"
+	return room_name(actual, map_id)
+
+func status_location_at(position: Vector2, map_id: String) -> String:
+	var room_id := room_id_at(position, map_id)
+	if floor_data[map_id].door_cells.has(cell_of(position, map_id)):
+		room_id = ""
+	var floor_name := "智信馆" if map_id == ZHIXING else map_name(map_id)
+	return floor_name + "·" + status_room_name(map_id, room_id)
 
 func nav_world_of(rid: String, map_id: String = FLOOR3) -> Vector2:
 	var room: Dictionary = floor_data[map_id].rooms[actual_room(map_id, rid)]

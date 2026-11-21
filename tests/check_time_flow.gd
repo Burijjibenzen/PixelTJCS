@@ -73,9 +73,20 @@ func verify() -> void:
 	for child in main.get_children():
 		if child.get_script() and child.get_script().resource_path.ends_with("social_ui.gd"):
 			observer = child
-	observer._show_line({"conversation_id": "moving", "sequence": 1, "participants": [subject.npc_name], "speaker": subject.npc_name, "text": "气泡显示时继续走路"})
+	observer._show_line({"conversation_id": "moving", "game_event_id": "test-event", "speech": "event_self_talk",
+		"sequence": 1, "participants": [subject.npc_name], "speaker": subject.npc_name, "text": "（自言自语）路上想个问题。"})
 	await physics_frame
 	subject._physics_process(1.0 / 60.0)
-	if not check(subject.global_position != paused_at and not observer.playbacks.is_empty(), "visible dialogue does not block movement"): return
+	if not check(subject.global_position != paused_at and not observer.playbacks.is_empty(), "self-talk does not block movement"): return
+	var line := {"conversation_id": "talking", "game_event_id": "test-chat", "speech": "npc_dialogue",
+		"sequence": 1, "participants": [subject.npc_name, main.npcs[1].npc_name],
+		"speaker": subject.npc_name, "text": "说完后还可以看气泡。", "ordered": true}
+	subject.social_busy = true
+	observer._show_line(line)
+	observer._tick_playbacks(7.0)
+	if not check(subject.movement_locked(), "conversation remains locked by backend after a bubble expires"): return
+	subject.social_busy = false
+	if not check(not subject.movement_locked() and not observer.bubble_labels[subject.npc_name].visible,
+			"actor can move after the last bubble and backend release"): return
 	print("PASS: original 10 game minutes/real second, continuous rates, movement x4/x6, pause, nonblocking bubbles")
 	quit(0)

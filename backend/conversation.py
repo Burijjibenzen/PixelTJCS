@@ -2,7 +2,7 @@
 import json
 import sqlite3
 import uuid
-from contextlib import closing
+from contextlib import closing, nullcontext
 from typing import TypedDict, List
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
@@ -28,6 +28,7 @@ class ConversationState(TypedDict, total=False):
     round: int
     max_rounds: int
     transcript: list
+    consent: dict
     memories: dict
     impact: dict
     relation: dict
@@ -39,7 +40,11 @@ class ConversationEngine:
         self.world, self.llm, self.memory = world, llm, memory
         self.npcs, self.relations = npcs, relations
         self.require_colocated = False  # CLI 的原演示位置调度保留；HTTP 装配为 True。
+        self.pair_ready = None
         self.emit = lambda kind, **data: None
+        self.progress = nullcontext
+        self.wait_for_playback = lambda run_id: None
+        self.record_outcome = None
         self.gossip_writer = lambda state: {}
         self.agents = {n: AgentRuntime(npc, relations) for n, npc in npcs.items()}
         self.connection = sqlite3.connect(memory.cfg.db_path, check_same_thread=False, timeout=10)
@@ -52,16 +57,25 @@ class ConversationEngine:
         graph = StateGraph(ConversationState)
         for name in ('validate', 'observe', 'opener', 'reply_b', 'reply_a', 'closing', 'memory_a', 'memory_b',
                      'assess', 'relation_update', 'gossip_transfer', 'reflect_a', 'reflect_b', 'complete'):
-            graph.add_node(name, getattr(self, name))
+            node=getattr(self,name)
+            graph.add_node(name,self._while_running(node) if name in
+                           ('validate','relation_update','complete') else node)
         graph.add_edge(START, 'validate')
-        for a,b in [('validate','observe'),('observe','opener'),('opener','reply_b'),('reply_b','reply_a'),
+        for a,b in [('validate','observe'),('observe','opener'),('opener','reply_b'),
                     ('closing','memory_a'),('memory_a','memory_b'),('memory_b','assess'),
                     ('assess','relation_update'),('relation_update','gossip_transfer'),
                     ('gossip_transfer','reflect_a'),('reflect_a','reflect_b'),('reflect_b','complete')]:
             graph.add_edge(a,b)
+        graph.add_conditional_edges('reply_b', lambda s: 'memory_a' if s.get('consent',{}).get('decision')=='brief' else 'reply_a')
         graph.add_conditional_edges('reply_a', lambda s: 'reply_b' if s['round'] < s['max_rounds'] else 'closing')
         graph.add_edge('complete', END)
         self.graph = graph.compile(checkpointer=self.checkpointer)
+
+    def _while_running(self,node):
+        def apply(state):
+            with self.progress():
+                return node(state)
+        return apply
 
     def close(self):
         self.connection.close()
@@ -70,7 +84,7 @@ class ConversationEngine:
         with closing(sqlite3.connect(self.memory.cfg.db_path, timeout=10)) as db, db:
             db.execute('INSERT OR REPLACE INTO m3_runs VALUES(?,?,?,?,?)', (run_id,a,b,status,error))
 
-    def run(self, a_name, b_name, trigger, run_id=None, gossip=None):
+    def run(self, a_name, b_name, trigger, run_id=None, gossip=None, invitation=None):
         if a_name == b_name or a_name not in self.npcs or b_name not in self.npcs:
             return None
         if not self.world.can_chat(a_name,b_name)[0]:
@@ -80,6 +94,11 @@ class ConversationEngine:
         run_id = run_id or uuid.uuid4().hex
         state = dict(id=run_id,a=a_name,b=b_name,trigger=trigger,round=0,max_rounds=WORLD.max_rounds,
                      transcript=[],memories={},gossip=gossip or {})
+        if invitation:
+            state.update(transcript=invitation['transcript'],consent=invitation['consent'])
+            state['trigger'] += '。接着已有的邀请和回应聊话题。'
+            if invitation['consent']['decision']=='brief':
+                state['trigger'] += '这是简短交谈，只问一个具体问题，答完就结束。'
         return self._invoke(state, run_id, a_name, b_name)
 
     def resume(self, run_id):
@@ -106,6 +125,8 @@ class ConversationEngine:
 
     def validate(self, state):
         a,b = state['a'],state['b']
+        if self.pair_ready is not None and not self.pair_ready(a,b):
+            raise ValueError('双方尚未抵达交谈位置')
         if not self.world.can_chat(a,b)[0]:
             raise ValueError('冷却中')
         area = AREAS[self.world.area_of(a)]['id']
@@ -121,15 +142,20 @@ class ConversationEngine:
     def observe(self,state):
         # M3: 真实相遇产生本人观察记忆；稳定 ID 防止检查点恢复重复写入。
         for name,other in ((state['a'],state['b']),(state['b'],state['a'])):
+            with self.progress():
+                pass
             mid=state['id']+':observation:'+name
-            if self.memory.get_by_id(mid) is None:
-                self.memory.add(agent=name,content=f"我在{AREAS[state['area']]['name']}遇到了{other}",
-                    type='observation',importance=0.15,game_time=state['time'],location=state['area'],
-                    participants=[other],memory_id=mid)
-            self.emit('memory_changed',event_key=mid,npc=name)
+            self.npcs[name].remember(f"我在{AREAS[state['area']]['name']}遇到了{other}",
+                perspective='你亲自遇见了对方',kind='observation',importance=0.15,
+                game_time=state['time'],location=state['area'],participants=[other],
+                memory_id=mid,commit=self.progress)
+            with self.progress():
+                self.emit('memory_changed',event_key=mid,npc=name)
         return {}
 
     def actor(self,state,which,task):
+        with self.progress():
+            pass
         name,other = state[which], state['b' if which == 'a' else 'a']
         return self.agents[name].graph.invoke(dict(task=task,other=other,trigger=state['trigger'],
             history=state['transcript'],time=state['time'],area=state['area'],
@@ -141,8 +167,10 @@ class ConversationEngine:
             text = '听说' + state['gossip']['content'] + '。' + text
         transcript = state['transcript'] + [{'speaker':state[which],'text':text}]
         sequence = len(transcript)
-        self.emit('dialogue_line', event_key=f"{state['id']}:line:{sequence}", conversation_id=state['id'],
-            sequence=sequence,participants=[state['a'],state['b']],speaker=state[which],text=text,area=state['area'])
+        with self.progress():
+            self.emit('dialogue_line', event_key=f"{state['id']}:line:{sequence}", conversation_id=state['id'],
+                sequence=sequence,participants=[state['a'],state['b']],speaker=state[which],text=text,area=state['area'],
+                ordered=True,speech='npc_dialogue',game_event_id='conversation:'+state['id'])
         log.info('%s: %s',state[which],text)
         return {'transcript':transcript}
 
@@ -153,7 +181,8 @@ class ConversationEngine:
 
     def save_memory(self,s,which):
         item = self.actor(s,which,'memory')['memory']
-        self.emit('memory_changed',event_key=s['id']+':memory:'+which,npc=s[which])
+        with self.progress():
+            self.emit('memory_changed',event_key=s['id']+':memory:'+which,npc=s[which])
         return {'memories':dict(s['memories'], **{s[which]:item})}
     def memory_a(self,s): return self.save_memory(s,'a')
     def memory_b(self,s): return self.save_memory(s,'b')
@@ -183,24 +212,33 @@ class ConversationEngine:
         return {'gossip':self.gossip_writer(s)}
     def reflect_a(self,s):
         if self.actor(s,'a','reflect')['reflected']:
-            self.emit('memory_changed',npc=s['a'])
+            with self.progress():
+                self.emit('memory_changed',npc=s['a'])
         return {}
     def reflect_b(self,s):
         if self.actor(s,'b','reflect')['reflected']:
-            self.emit('memory_changed',npc=s['b'])
+            with self.progress():
+                self.emit('memory_changed',npc=s['b'])
         return {}
 
     def complete(self,s):
-        self.world.mark_chatted(s['a'],s['b'])
+        self.wait_for_playback(s['id'])
         result=dict(conversation_id=s['id'], area=s['area'],area_name=AREAS[s['area']]['name'],
             game_time=self.world.clock.fmt(),trigger=s['trigger'],transcript=s['transcript'],
             memories=s['memories'],relation=s['relation'],gossip=s['gossip'])
+        if 'consent' in s:
+            result['consent']=s['consent']
+        if self.record_outcome is not None:
+            self.record_outcome(s['a'],s['b'],self.world.clock.now,result)
+        self.world.mark_chatted(s['a'],s['b'])
         self.emit('conversation',event_key=s['id']+':complete',conversation_id=s['id'],
                   participants=[s['a'],s['b']],result=result)
         return {'result':result}
 
     def _assess_relation(self, transcript: List[dict], a: str, b: str) -> RelationImpact:
         """LLM 评估对话对关系的影响；离线/失败时小幅正向兜底。"""
+        with self.progress():
+            pass
         old = self.relations.get(a, b)
         transcript_text = "\n".join(f"{t['speaker']}：{t['text']}" for t in transcript)
         impact = self.llm.chat_json(

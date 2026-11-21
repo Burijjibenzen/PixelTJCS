@@ -20,6 +20,7 @@
 """
 
 import json
+from contextlib import nullcontext
 import math
 import sqlite3
 import uuid
@@ -43,7 +44,7 @@ class MemoryItem:
     id: str
     agent: str  # 属于哪个角色
     content: str  # 记忆内容（第一人称视角）
-    type: str  # dialogue / observation / event / reflection
+    type: str  # dialogue / observation / event / gossip / overheard / reflection
     importance: float  # 重要性 0~1（LLM 评定）
     emotion: str  # 情绪标签
     game_time: float  # 发生时刻（游戏分钟）
@@ -141,6 +142,7 @@ class MemoryStore:
         participants: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
         memory_id: Optional[str] = None,  # M3: 检查点恢复使用稳定 ID。
+        commit=nullcontext,
     ) -> MemoryItem:
         """写入一条记忆；自动计算内容向量（失败则 None，检索降级为关键词）。"""
         item = MemoryItem(
@@ -158,7 +160,7 @@ class MemoryStore:
         vecs = self.llm.embed([content])
         item.embedding = vecs[0] if vecs else None
 
-        with self._connect() as conn:
+        with commit(), self._connect() as conn:
             conn.execute(
                 """INSERT OR IGNORE INTO memories (id, agent, content, type, importance,
                        emotion, game_time, location, participants, embedding,
@@ -185,7 +187,7 @@ class MemoryStore:
         """记忆当前强度 = 0.6·新近度 + 0.4·重要性（与检索公式解耦）。"""
         return 0.6 * self._recency(game_time, now) + 0.4 * importance
 
-    def decay_pass(self, now_minutes: float) -> Dict[str, int]:
+    def decay_pass(self, now_minutes: float, *, exclude=()) -> Dict[str, int]:
         """对全体角色的记忆执行一次"时间衰减检查"。
 
         强度低于 forget_threshold → 标记遗忘（原因: strength_decay）。
@@ -198,6 +200,8 @@ class MemoryStore:
                 "WHERE forgotten = 0"
             ).fetchall()
             for mid, agent, game_time, importance in rows:
+                if agent in exclude:
+                    continue
                 strength = self._strength(game_time, importance, now_minutes)
                 if strength < self.cfg.forget_threshold:
                     conn.execute(
@@ -234,11 +238,11 @@ class MemoryStore:
                 log.info("🗄️ [%s] 容量淘汰记忆: %s", agent, mid)
         return evicted
 
-    def full_forget_pass(self, now_minutes: float) -> Dict[str, int]:
+    def full_forget_pass(self, now_minutes: float, *, exclude=()) -> Dict[str, int]:
         """完整遗忘流程 = 衰减检查 + 全员容量淘汰。由世界时钟推进时调用。"""
-        stats = self.decay_pass(now_minutes)
+        stats = self.decay_pass(now_minutes,exclude=exclude)
         total_evict = sum(
-            self._evict_capacity(agent, now_minutes) for agent in self.list_agents()
+            self._evict_capacity(agent, now_minutes) for agent in self.list_agents() if agent not in exclude
         )
         stats["forgotten_evict"] = total_evict
         return stats
@@ -269,7 +273,7 @@ class MemoryStore:
         self, query_vec: Optional[List[float]], item: MemoryItem, query: str
     ) -> float:
         """相关度: 优先向量余弦；向量不可用时降级为字符二元组重叠。"""
-        if query_vec and item.embedding:
+        if query_vec and item.embedding and len(query_vec) == len(item.embedding):
             return self._cosine(query_vec, item.embedding)
         return self._keyword_overlap(query, item.content)
 

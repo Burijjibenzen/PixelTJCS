@@ -8,7 +8,9 @@ const TILE := 16
 const NO_CELL := Vector2i(-1, -1)
 const MapDoors := preload("res://scripts/map_doors.gd")
 const VIEW_HINT := "点击房间或交互点　右键拖动　滚轮缩放　1/2/3 切换楼层　Esc 返回"
-const WALK_HINT := "方向键 / WASD 试走　E 操作身边的门、楼梯或物品　点击空地可从该处开始试走"
+const WALK_HINT := "方向键 / WASD 试走　踩箭头换层　E 操作身边的门或物品　点击空地可从该处开始试走"
+const WALK_INTERACTION_RADIUS := 4.6
+const BOARD_WALK_RADIUS := 24.0
 
 @onready var stage: Control = $Background/Stage
 @onready var world: Node2D = $Background/Stage/World
@@ -30,13 +32,16 @@ var open_doors := {}  # 按楼层与门 id 保存，切换楼层后仍有效。
 var point_display_by_floor := {}
 var previous_pause := false
 var active := false
-var stair_menu: PopupMenu
-var stair_options: Array = []
+var notice_board: CanvasLayer
+var movement := preload("res://scripts/movement_keys.gd").new()
+var interaction_marks := preload("res://scripts/interaction_marks.gd").new()
 
 func _ready() -> void:
-	stair_menu = PopupMenu.new()
-	add_child(stair_menu)
-	stair_menu.id_pressed.connect(_choose_stair)
+	$Background.theme = preload("res://assets/tea_theme.tres")
+	add_child(movement)
+	interaction_marks.populate = _populate_interaction_marks
+	interaction_marks.z_index = 102
+	stage.add_child(interaction_marks)
 	for label in NAMES:
 		bar.get_node("Floor").add_item(label)
 	bar.get_node("Floor").item_selected.connect(show_floor)
@@ -44,16 +49,27 @@ func _ready() -> void:
 	bar.get_node("Walk").toggled.connect(_walk_mode)
 	bar.get_node("Fit").pressed.connect(fit)
 	bar.get_node("Back").pressed.connect(close)
+	var drag := preload("res://scripts/window_drag.gd").new()
+	add_child(drag)
+	drag.bind($Background, bar.get_node("Title"))
+	var fit_window := func(): $Background.size = Vector2(1080, 582).min(get_viewport().get_visible_rect().size)
+	get_viewport().size_changed.connect(fit_window)
+	fit_window.call()
 	stage.gui_input.connect(_stage_input)
 	stage.resized.connect(_stage_resized)
 	marks.draw.connect(_draw_marks)
 	walker.sprite_frames = preload("res://scenes/char_1.tres")
 	walker.play("idle")
 	if visible:
-		bar.get_node("Back").text = "关闭"
 		open.call_deferred()
 	elif "--maps" in OS.get_cmdline_user_args():
 		open.call_deferred()
+
+func toggle() -> void:
+	if active:
+		close()
+	else:
+		open()
 
 func open() -> void:
 	if active:
@@ -69,7 +85,6 @@ func close() -> void:
 	if not active:
 		return
 	active = false
-	stair_menu.hide()
 	if get_tree().current_scene == self:
 		get_tree().quit()
 		return
@@ -79,7 +94,6 @@ func close() -> void:
 func show_floor(index: int, arrival := NO_CELL) -> void:
 	if index < 0 or index >= IDS.size():
 		return
-	stair_menu.hide()
 	var dir := "res://assets/map/%s/" % IDS[index]
 	var packed := load(dir + "Map.tscn") as PackedScene
 	var meta := Game._load_json(dir + "manifest.json")
@@ -177,12 +191,14 @@ func _use(item: Dictionary) -> void:
 			var key := "%s:%s" % [IDS[current_floor], item.id]
 			notice_board_requested.emit(key)
 			if not notice_board_requested.has_connections():
-				var board_ui = get_node_or_null("NoticeBoard")
-				if board_ui == null:
-					board_ui = load("res://scripts/notice_board.gd").new()
-					board_ui.name = "NoticeBoard"
-					add_child(board_ui)
-				board_ui.open_board(key)
+				if notice_board == null:
+					notice_board = load("res://scripts/notice_board.gd").new()
+					notice_board.name = "NoticeBoard"
+					add_child(notice_board)
+				if notice_board.visible and notice_board.board_id == key:
+					notice_board.hide()
+				else:
+					notice_board.open_board(key)
 			status.text = "正在查看公告栏"
 		"door":
 			var key := _door_key(item)
@@ -195,31 +211,15 @@ func _use(item: Dictionary) -> void:
 			status.text = "%s　·　%s" % [item.name, "已打开，可通过" if opening else "已关闭"]
 			marks.queue_redraw()
 		"stair":
-			stair_options = Game.stair_destinations(IDS[current_floor], str(item.id))
-			if stair_options.size() == 1:
-				_choose_stair(0)
-			elif stair_options.size() > 1:
-				stair_menu.clear()
-				for index in stair_options.size():
-					stair_menu.add_item("前往" + Game.map_name(stair_options[index].map_id), index)
-				stair_menu.position = Vector2i(get_viewport().get_mouse_position())
-				stair_menu.popup()
-				status.text = "请选择上楼或前往智信馆；跨馆省略室外步行"
-			else:
+			if Game.stair_destinations(IDS[current_floor], str(item.id)).is_empty():
 				status.text = "%s　·　%s" % [item.name, item.get("text", "通往楼层图以外")]
+			else:
+				status.text = "开启试走后，走到箭头即可前往标出的楼层或场馆"
 		_:
 			var body := str(item.get("text", ""))
 			status.text = str(item.name) if body.is_empty() else "%s　·　%s" % [item.name, body]
 	status.tooltip_text = status.text
 
-
-func _choose_stair(index: int) -> void:
-	if index < 0 or index >= stair_options.size():
-		return
-	var destination: Dictionary = stair_options[index]
-	show_floor(IDS.find(destination.map_id), destination.cell)
-	status.text = "已到达%s的楼梯口" % Game.map_name(destination.map_id)
-	status.tooltip_text = status.text
 
 func _has_walkable_floor(cell: Vector2i) -> bool:
 	return Rect2i(Vector2i.ZERO, _cell(grid.size)).has_point(cell) and grid.obstacle[cell.y][cell.x] == "0"
@@ -258,40 +258,39 @@ func _walk_mode(on: bool) -> void:
 	marks.queue_redraw()
 
 func _process(delta: float) -> void:
-	if not visible or not walker.visible or not map_node:
+	if not visible or not walker.visible or not map_node or not _can_use_keyboard():
 		return
 	step_delay = maxf(0, step_delay - delta)
 	if step_delay > 0:
 		return
-	var move := Vector2i.ZERO
-	var animation := "idle"
-	if Input.is_key_pressed(KEY_LEFT) or Input.is_key_pressed(KEY_A):
-		move = Vector2i.LEFT
-		animation = "walk_left"
-	elif Input.is_key_pressed(KEY_RIGHT) or Input.is_key_pressed(KEY_D):
-		move = Vector2i.RIGHT
-		animation = "walk_right"
-	elif Input.is_key_pressed(KEY_UP) or Input.is_key_pressed(KEY_W):
-		move = Vector2i.UP
-		animation = "walk_up"
-	elif Input.is_key_pressed(KEY_DOWN) or Input.is_key_pressed(KEY_S):
-		move = Vector2i.DOWN
-		animation = "walk_down"
+	var move := movement.direction()
 	if move != Vector2i.ZERO:
 		step_delay = 0.13
 		if can_walk(walk_cell + move):
 			walk_cell += move
+			var destination: Dictionary = Game.floor_data[IDS[current_floor]].walk_stairs.get(walk_cell, {})
+			if not destination.is_empty():
+				show_floor(IDS.find(destination.map_id), destination.cell)
+				status.text = "已到达%s的楼梯口" % Game.map_name(destination.map_id)
+				status.tooltip_text = status.text
 			walker.position = _center(walk_cell)
 			_center_on(walk_cell)
 			marks.queue_redraw()
 		else:
-			animation = "idle"
-	walker.play(animation)
+			move = Vector2i.ZERO
+	walker.play(movement.ANIMATIONS[move])
 
-func _near_item(cell: Vector2i, radius: float) -> Dictionary:
+func _near_item(cell: Vector2i, radius: float, include_stairs := true) -> Dictionary:
 	var best := {}
-	var distance := radius + 0.001
+	var distance := INF
 	for item: Dictionary in manifest.objects:
+		if not include_stairs and item.type == "stair":
+			continue
+		var nearby_notice: bool = item.type == "notice" and radius == WALK_INTERACTION_RADIUS
+		if nearby_notice:
+			var floor_id: String = IDS[current_floor]
+			if Game.room_id_at(Game.world_of(cell, floor_id), floor_id) != str(item.room):
+				continue
 		var score := Vector2(cell).distance_to(Vector2(_cell(item.cell)))
 		if item.type == "door":
 			if doors.is_passage(item.id, cell) or doors.is_closed_panel(item.id, cell):
@@ -299,7 +298,8 @@ func _near_item(cell: Vector2i, radius: float) -> Dictionary:
 		else:
 			for point: Array in item.get("cells", []):
 				score = minf(score, Vector2(cell).distance_to(Vector2(_cell(point))))
-		if score < distance:
+		var allowed_radius := BOARD_WALK_RADIUS if nearby_notice else radius
+		if score <= allowed_radius and score < distance:
 			distance = score
 			best = item
 	return best
@@ -343,7 +343,7 @@ func _stage_input(event: InputEvent) -> void:
 	stage.accept_event()
 
 func _unhandled_key_input(event: InputEvent) -> void:
-	if not visible or not event is InputEventKey or not event.pressed or event.echo:
+	if not visible or not _can_use_keyboard() or not event is InputEventKey or not event.pressed or event.echo:
 		return
 	match event.keycode:
 		KEY_1, KEY_2, KEY_3:
@@ -352,7 +352,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			close()
 		KEY_E:
 			if walker.visible:
-				var item := _near_item(walk_cell, 2.3)
+				var item := _near_item(walk_cell, WALK_INTERACTION_RADIUS, false)
 				if not item.is_empty():
 					_use(item)
 				else:
@@ -360,6 +360,34 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		_:
 			return
 	get_viewport().set_input_as_handled()
+
+func _can_use_keyboard() -> bool:
+	var focus := get_viewport().gui_get_focus_owner()
+	return not (focus is LineEdit or focus is TextEdit) and (notice_board == null or not notice_board.visible)
+
+func _populate_interaction_marks() -> void:
+	if not visible or not map_node:
+		return
+	var to_marks := interaction_marks.get_global_transform_with_canvas().affine_inverse()
+	var map_to_marks := to_marks * world.get_global_transform_with_canvas()
+	interaction_marks.clip = Rect2(Vector2.ZERO, stage.size)
+	for item: Dictionary in manifest.objects:
+		if item.type == "notice":
+			interaction_marks.labels.append({"text": "告示栏", "point": map_to_marks * (_center(_cell(item.cell)) - Vector2(0, 28))})
+	var stairs: Dictionary = Game.floor_data[IDS[current_floor]].walk_stairs
+	for cell: Vector2i in stairs:
+		interaction_marks.arrows.append({"text": stairs[cell].label, "point": map_to_marks * _center(cell)})
+	var nearby := _near_item(walk_cell, WALK_INTERACTION_RADIUS, false) if walker.visible and _can_use_keyboard() else {}
+	if not nearby.is_empty():
+		interaction_marks.show_prompt(map_to_marks * (_center(walk_cell) - Vector2(0, 58)))
+		interaction_marks.outline_cells(nearby.get("cells", [nearby.cell]), Vector2.ZERO, map_to_marks)
+	var pointer: Vector2 = interaction_marks.pointer
+	if stage.get_global_rect().has_point(pointer) and get_viewport().gui_get_hovered_control() == stage:
+		var map_point := world.get_global_transform_with_canvas().affine_inverse() * pointer
+		var cell := Vector2i((map_point / TILE).floor())
+		var hovered := _near_item(cell, 0.8)
+		if not hovered.is_empty() and hovered != nearby:
+			interaction_marks.outline_cells(hovered.get("cells", [hovered.cell]), Vector2.ZERO, map_to_marks)
 
 func _draw_marks() -> void:
 	if not map_node:
@@ -374,6 +402,8 @@ func _draw_marks() -> void:
 			if item.type == "door":
 				color = Color("#61cc8d") if open_doors.get(_door_key(item), false) else Color("#ffad58")
 			elif item.type == "stair":
+				if not Game.stair_destinations(IDS[current_floor], str(item.id)).is_empty():
+					continue
 				color = Color("#5acaff")
 			marks.draw_circle(pos, 5.5, Color("#25333e"))
 			marks.draw_circle(pos, 3.6, color)

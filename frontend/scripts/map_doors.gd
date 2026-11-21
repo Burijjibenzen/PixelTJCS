@@ -60,6 +60,8 @@ func update_for_npcs(npcs: Array[NPC], map_id: String, player_cell: Vector2i = V
 			if abs(player_cell.x - passage.x) + abs(player_cell.y - passage.y) <= 2:
 				needed[_passage_at[passage]] = true
 	for npc: NPC in npcs:
+		if not npc.on_stage:
+			continue
 		if npc.map_id != map_id:
 			continue
 		var feet := Game.cell_of(npc.global_position, map_id)

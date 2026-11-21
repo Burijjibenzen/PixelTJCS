@@ -80,6 +80,10 @@ def grid_of(area_id: str) -> str:
     return area["room_id"] if area["map_id"] == J3 else "R01"
 
 
+class CastChanged(RuntimeError):
+    """A participant left the world while an action was running."""
+
+
 @dataclass
 class GameClock:
     """游戏时钟。内部只存"从开局起经过了多少游戏分钟"。"""

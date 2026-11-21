@@ -32,6 +32,7 @@ class LLMConfig:
     # max_tokens 给小了正文会是 null —— 必须留足思考空间
     max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "1024"))
     temperature: float = float(os.getenv("LLM_TEMPERATURE", "0.8"))
+    max_concurrent_requests: int = int(os.getenv("LLM_MAX_CONCURRENT_REQUESTS", "3"))
 
 
 @dataclass
@@ -85,15 +86,17 @@ class SocialConfig:
     base_chat_probability: float = 0.20
     max_conversations: int = 2
     presence_seconds: float = 15.0
-    encounter_radius: float = 96.0  # 人物脚下坐标的地图像素距离，约6个16px地砖。
+    encounter_wait_radius: float = 96.0  # 接近时让被找的人停步，继续保留较小的交谈距离。
+    encounter_radius: float = 32.0  # NPC 交谈距离，两个地图格。
+    overhearing_radius: float = 150.0
+    perception_radius: float = 96.0
     position_report_seconds: float = 0.25
     position_max_age_seconds: float = 2.0  # 心跳不能延长坐标有效期。
     meeting_timeout: float = 300.0
     meeting_wait_timeout: float = 300.0
     maintenance_minutes: float = 30.0
-    bubble_seconds: float = 10.0  # 恢复原版：新台词立即替换，每段最多显示 10 现实秒。
+    bubble_seconds: float = 7.0  # 按句长展示，每段最多 7 现实秒。
     bubble_segment_chars: int = 60
-    bubble_exit_hold_seconds: float = 3.0  # 最后一句后至多停留片刻；完整台词在日志里。
     visit_relation: float = 80.0
     gossip_max_hops: int = 3
     websocket_queue: int = 256
@@ -101,7 +104,6 @@ class SocialConfig:
     memory_history_limit: int = 200
 
 SOCIAL = SocialConfig()
-
 
 @dataclass
 class ActivityConfig:
@@ -129,8 +131,8 @@ ACTIVITY = ActivityConfig()
 
 @dataclass
 class NoticeBoardConfig:
-    read_radius: float = 64.0
-    discovery_radius: float = 192.0
+    read_radius: float = 48.0  # 板前可阅读的站位范围。
+    discovery_radius: float = 384.0  # 同层、同走廊，涵盖济事楼三楼靠左的实验室门外。
     approach_timeout_seconds: float = 30.0
     read_seconds: float = 2.5  # 现实秒，快进不省略阅读过程。
     reader_cooldown_seconds: float = 10.0
@@ -153,7 +155,7 @@ class PlayerConfig:
     memory_importance: float = 0.45
     relation_max_delta: float = 6.0
     engage_lease_seconds: float = 45.0
-    chat_radius: float = 48.0
+    chat_radius: float = 96.0
 
 
 PLAYER = PlayerConfig()

@@ -66,14 +66,18 @@ func _ready() -> void:
 	mode_button = Button.new()
 	mode_button.text = "玩家模式"
 	mode_button.position = Vector2(670, 12)
-	mode_button.pressed.connect(open_panel)
+	mode_button.pressed.connect(toggle_panel)
 	add_child(mode_button)
 	window = PanelContainer.new()
 	window.name = "Window"
-	window.position = Vector2(330, 60)
+	window.theme = preload("res://assets/tea_theme.tres")
+	window.position = Vector2(330, 86)
 	window.custom_minimum_size = Vector2(620, 610)
+	window.mouse_force_pass_scroll_events = false
 	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.055, 0.085, 0.13, 0.98)
+	style.bg_color = Color("#f3e7e1")
+	style.border_width_top = 3
+	style.border_color = Color("#b38878")
 	style.set_corner_radius_all(10)
 	style.set_content_margin_all(16)
 	window.add_theme_stylebox_override("panel", style)
@@ -88,10 +92,14 @@ func _ready() -> void:
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
 	var close := Button.new()
-	close.text = "收起"
+	close.text = "X"
+	close.tooltip_text = "关闭"
 	close.pressed.connect(_close_panel)
 	header.add_child(close)
-	body.add_child(_label("加入后用 WASD／方向键行走，靠近角色按 E 交谈；楼梯旁按 E 换层，P 回到自己。"))
+	var drag := preload("res://scripts/window_drag.gd").new()
+	add_child(drag)
+	drag.bind(window, title)
+	body.add_child(_label("加入后用 WASD／方向键行走，靠近角色按 E 交谈；走到楼梯箭头即可换层，P 回到自己。"))
 	var identity := HBoxContainer.new()
 	body.add_child(identity)
 	name_edit = LineEdit.new()
@@ -135,7 +143,7 @@ func _ready() -> void:
 	message_edit.text_changed.connect(_update_controls)
 	body.add_child(message_edit)
 	send_hint = _label("先走近角色，按 E 发起交谈。")
-	send_hint.add_theme_color_override("font_color", Color("#ffd86b"))
+	send_hint.add_theme_color_override("font_color", Color("#8b4f30"))
 	body.add_child(send_hint)
 	var actions := HBoxContainer.new()
 	body.add_child(actions)
@@ -156,6 +164,12 @@ func _label(text: String) -> Label:
 	result.add_theme_font_size_override("font_size", 14)
 	result.max_lines_visible = 2
 	return result
+
+func toggle_panel() -> void:
+	if window.visible:
+		_close_panel()
+	else:
+		open_panel()
 
 func open_panel() -> void:
 	window.show()
@@ -228,7 +242,7 @@ func leave() -> void:
 func send() -> void:
 	if pending or not active or not turn_id.is_empty():return
 	if not _near_selected():
-		status.text = "请先走到所选角色身边（约 3 格）。"
+		status.text = "请先走到所选角色同一房间的 6 格内。"
 		return
 	var message := message_edit.text.strip_edges()
 	if message.is_empty() or message.length() > 500:return
@@ -258,7 +272,7 @@ func _request(kind: String, path: String, payload := {}) -> void:
 func _done(result: int, code: int, _headers: PackedStringArray, bytes: PackedByteArray) -> void:
 	var kind := request_kind
 	pending = false
-	var data = JSON.parse_string(bytes.get_string_from_utf8())
+	var data = null if bytes.is_empty() else JSON.parse_string(bytes.get_string_from_utf8())
 	if result != HTTPRequest.RESULT_SUCCESS or code not in [200, 202] or not data is Dictionary:
 		status.text = str(data.get("detail", "请求失败，请稍后重试。")) if data is Dictionary else "连接暂时中断；草稿已保留，可重试发送。"
 		if kind == "history":history_dirty = true
@@ -363,7 +377,7 @@ func _send_block_reason() -> String:
 	if not turn_id.is_empty():return "上一轮仍在回复，请等回复完成。"
 	if engage_kind == "engage" or not engage_target.is_empty():return "正在等待角色停下交谈。"
 	if conversation_npc != selected_npc or conversation_npc.is_empty():
-		return "请收起面板，走到所选角色同一房间的约 3 格内，再按 E。"
+		return "请收起面板，走到所选角色同一房间的 6 格内，再按 E。"
 	if not near_checker.is_valid() or not bool(near_checker.call(selected_npc)):
 		return "已离开交谈范围，请重新靠近角色按 E。"
 	if message_edit.text.strip_edges().is_empty():return "先输入想说的话。"
@@ -419,7 +433,7 @@ func _engage_done(result: int, code: int, _headers: PackedStringArray, bytes: Pa
 	var kind := engage_kind
 	var requested := engage_sent_npc
 	engage_kind = ""
-	var data = JSON.parse_string(bytes.get_string_from_utf8())
+	var data = null if bytes.is_empty() else JSON.parse_string(bytes.get_string_from_utf8())
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200 or not data is Dictionary:
 		if kind == "engage":
 			var still_near := near_checker.is_valid() and bool(near_checker.call(requested))

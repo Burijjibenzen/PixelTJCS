@@ -43,70 +43,99 @@ offset_left = 12.0
 offset_top = 8.0
 offset_right = 400.0
 offset_bottom = 30.0
-theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_colors/font_color = Color(0.98, 0.94, 0.88, 1)
+theme_override_colors/font_outline_color = Color(0.16, 0.13, 0.10, 1)
 theme_override_constants/outline_size = 4
 text = "镜头: 自由"
 
 [node name="ClockLabel" type="Label" parent="UI"]
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -390.0
+offset_left = -625.0
 offset_top = 8.0
 offset_right = -12.0
 offset_bottom = 30.0
-theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_colors/font_color = Color(0.98, 0.94, 0.88, 1)
+theme_override_colors/font_outline_color = Color(0.16, 0.13, 0.10, 1)
 theme_override_constants/outline_size = 4
+mouse_filter = 1
 horizontal_alignment = 2
 text = "08:00"
 
 [node name="HintLabel" type="Label" parent="UI"]
 anchor_top = 1.0
 anchor_bottom = 1.0
-offset_left = 12.0
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -850.0
 offset_top = -30.0
-offset_right = 900.0
+offset_right = -142.0
 offset_bottom = -8.0
-theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_colors/font_color = Color(0.98, 0.94, 0.88, 1)
+theme_override_colors/font_outline_color = Color(0.16, 0.13, 0.10, 1)
 theme_override_constants/outline_size = 4
-text = "点击人物：跟随/资料　1/2/3 切楼　方向键平移　滚轮缩放　空格切换　Esc 取消　V 分区"
+horizontal_alignment = 2
+text = "点击人物：跟随/资料　1/2/3 切楼　按住左键拖地图　滚轮缩放　空格切换　Esc 取消　V 分区"
 
 [node name="BtnAdv1h" type="Button" parent="UI"]
 anchor_left = 1.0
-anchor_top = 1.0
 anchor_right = 1.0
-anchor_bottom = 1.0
-offset_left = -352.0
-offset_top = -42.0
-offset_right = -272.0
-offset_bottom = -12.0
+offset_left = -528.0
+offset_top = 42.0
+offset_right = -430.0
+offset_bottom = 78.0
 focus_mode = 0
 text = "快进1小时"
 tooltip_text = "连续推进1个游戏小时，完成后恢复原倍率"
 
 [node name="BtnAdv4h" type="Button" parent="UI"]
 anchor_left = 1.0
-anchor_top = 1.0
 anchor_right = 1.0
-anchor_bottom = 1.0
-offset_left = -264.0
-offset_top = -42.0
-offset_right = -184.0
-offset_bottom = -12.0
+offset_left = -422.0
+offset_top = 42.0
+offset_right = -324.0
+offset_bottom = 78.0
 focus_mode = 0
 text = "快进4小时"
 tooltip_text = "连续推进4个游戏小时，完成后恢复原倍率"
 
+[node name="BtnAdv3d" type="Button" parent="UI"]
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -316.0
+offset_top = 42.0
+offset_right = -218.0
+offset_bottom = 78.0
+focus_mode = 0
+text = "快进3天"
+
 [node name="SpeedPicker" type="OptionButton" parent="UI"]
 anchor_left = 1.0
-anchor_top = 1.0
 anchor_right = 1.0
-anchor_bottom = 1.0
-offset_left = -176.0
-offset_top = -42.0
-offset_right = -12.0
-offset_bottom = -12.0
+offset_left = -210.0
+offset_top = 42.0
+offset_right = -88.0
+offset_bottom = 78.0
 focus_mode = 0
 tooltip_text = "选择连续倍率；原速下现实1秒 = 游戏10分钟"
+
+[node name="BtnPause" type="Button" parent="UI"]
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -80.0
+offset_top = 42.0
+offset_right = -12.0
+offset_bottom = 78.0
+focus_mode = 0
+text = "暂停"
+
+[node name="GodMode" type="Button" parent="UI"]
+offset_left = 596.0
+offset_top = 10.0
+offset_right = 688.0
+offset_bottom = 42.0
+focus_mode = 0
+text = "上帝模式"
 
 [node name="MapBrowserButton" type="Button" parent="UI"]
 offset_left = 12.0
@@ -127,4 +156,4 @@ tooltip_text = "选择要观察 NPC 的楼层（1 / 2 / 3）"
 [node name="MapBrowser" parent="." instance=ExtResource("5")]
 visible = false
 
-[connection signal="pressed" from="UI/MapBrowserButton" to="MapBrowser" method="open"]
+[connection signal="pressed" from="UI/MapBrowserButton" to="MapBrowser" method="toggle"]

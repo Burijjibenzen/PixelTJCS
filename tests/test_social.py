@@ -51,7 +51,11 @@ class SocialTests(unittest.TestCase):
     def report_positions(self,names=None):
         for name in names or self.s.npcs:
             room=AREAS[self.s.world.area_of(name)]
-            self.s.report_arrival(name,map_id=room['map_id'],room_id=room['room_id'],x=0,y=0)
+            self.s.report_arrival(name,map_id=room['map_id'],room_id=room['room_id'],x=0,y=0,arrived=True)
+    def run_at_positions(self,a,b,trigger):
+        self.report_positions([a,b])
+        return self.s.run_conversation(a,b,trigger)
+
     def client(self):
         app=FastAPI();install(app,lambda:self.s)
         app.get('/health')(lambda:{'status':'ok'})
@@ -66,6 +70,86 @@ class SocialTests(unittest.TestCase):
             try:yield client
             finally:client.close()
 
+    def test_cast_persists_absence_and_resumes_the_suspended_activity(self):
+        area=self.s.world.area_of(self.a)
+        self.assertTrue(self.s.assign_destination(self.a,area))
+        self.s.planner.tick(time.monotonic(),0)
+        activity=self.s.planner.current_item(self.a)
+        self.report_positions([self.a,self.b])
+        self.s.planner.tick(time.monotonic(),1)
+        minutes=activity['dwell_minutes']
+        payload={'npc':self.a,'on_stage':False,'world_id':self.s.world_id}
+        with self.profile_client() as client:
+            result=client.post('/world/cast',json=payload)
+            self.assertEqual(200,result.status_code,result.text)
+            self.assertFalse(result.json()['world']['npcs'][self.a]['on_stage'])
+            self.assertFalse(self.s.available(self.a,self.b))
+            self.assertNotIn(self.a,self.s.positions)
+            self.assertNotIn(self.a,[row['name'] for row in self.s.perception(self.b)['nearby_characters']])
+            self.assertEqual(400,client.post('/social/visit',json={'a':self.b,'b':self.a}).status_code)
+            self.assertEqual(409,client.post('/world/whisper',json={'npc':self.a,'text':'去图书馆'}).status_code)
+            self.assertEqual(200,client.get('/npcs/'+self.a+'/profile').status_code)
+            self.assertEqual(200,client.post('/world/cast',json=payload).status_code)
+            entries=client.get('/npcs/'+self.a+'/timeline').json()['events']
+            self.assertEqual(1,sum(row['kind']=='stage_exit' for row in entries))
+            self.assertEqual('退场',entries[0]['content']['title'])
+        self.s.planner.tick(time.monotonic(),100)
+        self.assertEqual(minutes,activity['dwell_minutes'])
+        self.s.stop()
+        self.s=SocialService()
+        self.assertFalse(self.s.onstage(self.a))
+        self.assertEqual('stage_exit',self.s.game_events.current()[self.a]['kind'])
+        with self.profile_client() as client:
+            result=client.post('/world/cast',json=dict(payload,on_stage=True))
+            self.assertEqual(200,result.status_code,result.text)
+            self.assertTrue(result.json()['world']['npcs'][self.a]['on_stage'])
+            room=AREAS[area]
+            self.assertEqual(400,client.post('/world/report',json=dict(npc=self.a,map_id=room['map_id'],
+                room_id=room['room_id'],x=0,y=0,cast_version=0)).status_code)
+            entries=client.get('/npcs/'+self.a+'/timeline').json()['events']
+        self.assertEqual('出演',entries[0]['content']['title'])
+        self.assertEqual(activity['id'],self.s.game_events.current()[self.a]['id'])
+        self.assertEqual(minutes,self.s.planner.current_item(self.a)['dwell_minutes'])
+
+    def test_reset_world_clears_runtime_and_broadcasts_a_fresh_day_one(self):
+        from backend import api
+        from backend.noticeboards import BOARDS
+
+        service=self.s
+        service.set_control(paused=True)
+        home=service.world.schedule_area(service.cards[self.a],480)
+        initial_relations={name:dict(card.initial_relations) for name,card in service.cards.items()}
+        service.advance_time(1440,maintenance=False)
+        service.observe(self.a,'仅旧世界记得的事',0.9)
+        service.boards.publish(next(iter(BOARDS)),'只存在于旧世界的旧公告')
+        service.player.join('旧玩家')
+        service.planner.command(self.a,'j3_lab')
+        world_id=service.world_id
+        with patch.object(api,'_service',service), TestClient(api.app) as client:
+            with client.websocket_connect('/ws/events') as socket:
+                self.assertEqual(world_id,socket.receive_json()['world']['social']['world_id'])
+                self.assertEqual(422,client.post('/world/reset',json={'confirm':False,'world_id':world_id}).status_code)
+                self.assertEqual(409,client.post('/world/reset',json={'confirm':True,'world_id':'stale'}).status_code)
+                self.assertEqual(1920,client.get('/world').json()['minutes'])
+                response=client.post('/world/reset',json={'confirm':True,'world_id':world_id})
+                self.assertEqual(200,response.status_code,response.text)
+                world=response.json()['world']
+                self.assertEqual(480,world['minutes'])
+                self.assertFalse(world['social']['paused'])
+                self.assertNotEqual(world_id,world['social']['world_id'])
+                self.assertEqual('world_reset',socket.receive_json()['kind'])
+                room=AREAS[home]
+                self.assertEqual((room['map_id'],room['room_id']),(world['npcs'][self.a]['map_id'],world['npcs'][self.a]['room_id']))
+                self.assertEqual(409,client.post('/world/report',json={'npc':self.a,'grid':'R03','world_id':world_id}).status_code)
+                replacement=api.get_service()
+                self.assertEqual(initial_relations,{name:card.initial_relations for name,card in replacement.cards.items()})
+                self.assertEqual(service.cards[self.a].schedule,replacement.cards[self.a].schedule)
+                with replacement.database() as db:
+                    for table in ('memories','board_notices','player_profiles','player_sessions','player_turns','checkpoints'):
+                        self.assertEqual(0,db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0],table)
+                self.assertNotIn('旧公告',str(replacement.bus.history(limit=500)))
+                self.assertFalse(any(item['source']=='manual' for item in replacement.planner.records.values()))
+
     def test_public_profiles_exclude_private_fields_without_model_calls(self):
         before=[]
         for card in self.s.cards.values():
@@ -79,6 +163,7 @@ class SocialTests(unittest.TestCase):
                 self.assertEqual(200,response.status_code)
                 data=response.json()
                 self.assertEqual(expected,set(data))
+                self.assertTrue(all(0<len(entry['activity'])<=8 for entry in data['schedule']))
                 self.assertEqual(name,data['name'])
                 for secret in card.secrets:self.assertNotIn(secret,response.text)
                 self.assertNotIn('FUTURE_PRIVATE_FIELD',response.text)
@@ -112,11 +197,12 @@ class SocialTests(unittest.TestCase):
             self.assertEqual([],data['traits'])
             self.assertEqual([],data['schedule'])
             self.assertEqual({'short_term':'','long_term':''},data['goals'])
-            card.schedule={'09:00':'not-a-room','08:00':'j3_lab'}
+            card.schedule={'09:00':'not-a-room','08:00':'j3_lab','16:00':'zx4_yan'}
             response=client.get('/npcs/'+self.a+'/profile')
             self.assertEqual(200,response.status_code)
             rows=response.json()['schedule']
-            self.assertEqual(['08:00','09:00'],[row['time'] for row in rows])
+            self.assertEqual(['08:00','09:00','16:00'],[row['time'] for row in rows])
+            self.assertEqual(['推进科研','日常安排','请教导师'],[row['activity'] for row in rows])
             self.assertEqual('未知地点',rows[1]['location']['name'])
 
     def test_public_profile_uses_actual_location_and_current_destination(self):
@@ -146,10 +232,34 @@ class SocialTests(unittest.TestCase):
 
     def test_graph_nodes_real_execution_and_cooldown(self):
         before=self.s.relations.get(self.a,self.b)
-        result=self.s.run_conversation(self.a,self.b,'测试相遇')
+        agent=self.s.engine.agents[self.a]
+        with patch.object(agent,'react_to_event',wraps=agent.react_to_event) as react:
+            result=self.run_at_positions(self.a,self.b,'测试相遇')
+        react.assert_called_once()
+        self.assertEqual('conversation_completed',react.call_args.args[0]['kind'])
         self.assertIsNotNone(result)
         self.assertEqual(6,len(result['transcript']))
         self.assertEqual(before+1,self.s.relations.get(self.a,self.b))
+        event_id='conversation:'+result['conversation_id']
+        area=AREAS[result['area']]
+        with self.profile_client() as client:
+            first,=client.get(f'/npcs/{self.a}/timeline').json()['events']
+            second,=client.get(f'/npcs/{self.b}/timeline').json()['events']
+            self.assertEqual([],client.get(f'/npcs/{self.c}/timeline').json()['events'])
+        self.assertEqual(first['id'],second['id'])
+        self.assertEqual(first['result'],second['result'])
+        self.assertEqual(first['content']['transcript'],second['content']['transcript'])
+        self.assertEqual(f'收到{self.a}的邀约',second['content']['title'])
+        self.assertNotIn('trigger',second['content'])
+        self.assertEqual(event_id,first['id'])
+        self.assertEqual([self.a,self.b],first['participants'])
+        self.assertEqual(dict(map_id=area['map_id'],room_id=area['room_id']),first['location'])
+        self.assertEqual(result['transcript'],first['content']['transcript'])
+        self.assertEqual(result['relation'],first['result']['relation'])
+        self.assertEqual('continue',first['reaction']['action'])
+        self.assertEqual([],first['reaction']['activity_ids'])
+        self.assertEqual([event_id],[item['event_id'] for item in self.s.planner.context(self.a)['known_events']])
+        self.assertFalse(self.s.planner.context(self.c)['known_events'])
         nodes=self.s.engine.graph.get_graph().nodes
         self.assertTrue({'opener','reply_a','reply_b','memory_a','assess','reflect_a'}<=set(nodes))
         config={'configurable':{'thread_id':result['conversation_id']}}
@@ -157,7 +267,7 @@ class SocialTests(unittest.TestCase):
         self.assertGreater(len(history),10)
         self.assertEqual((),self.s.engine.graph.get_state(config).next)
         self.release()
-        self.assertIsNone(self.s.run_conversation(self.a,self.b,'冷却'))
+        self.assertIsNone(self.run_at_positions(self.a,self.b,'冷却'))
 
     def test_scheduler_calls_service_then_graph(self):
         self.report_positions()
@@ -202,7 +312,7 @@ class SocialTests(unittest.TestCase):
         with patch.object(SOCIAL,'base_chat_probability',1),patch('backend.scheduler.random.random',return_value=0),patch.object(self.s.scheduler,'submit') as submit:
             self.s.scheduler.natural(time.monotonic())
             submit.assert_not_called()
-            self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=32,y=0)
+            self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=32,y=0,arrived=True)
             self.s.scheduler.natural(time.monotonic())
             submit.assert_called_once()
         self.assertEqual(before,len(self.s.memory.get_active(self.a,50)))
@@ -212,8 +322,7 @@ class SocialTests(unittest.TestCase):
         with patch.object(SOCIAL,'base_chat_probability',1),patch('backend.scheduler.random.random',return_value=0),patch.object(self.s.scheduler,'submit') as submit:
             self.s.scheduler.natural(time.monotonic())
             submit.assert_not_called()
-        # 双方均为旧客户端时，显式请求保留原区域兼容，不自动发起自然对话。
-        self.assertTrue(self.s.valid_pair(self.a,self.b))
+        self.assertFalse(self.s.valid_pair(self.a,self.b))
 
     def test_movement_during_model_decision_prevents_remote_chat_and_gossip(self):
         self.report_positions([self.a,self.b]);room=AREAS[self.area]
@@ -240,9 +349,47 @@ class SocialTests(unittest.TestCase):
         self.s.scheduler.meetings(time.monotonic(),0)
         self.assertEqual('moving',meeting['state'])
         self.assertFalse(self.s.busy)
-        self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=16,y=0)
+        self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=16,y=0,arrived=True)
+        self.s.report_arrival(self.a,map_id=room['map_id'],room_id=room['room_id'],x=0,y=0,arrived=False)
+        self.s.scheduler.meetings(time.monotonic(),0)
+        self.assertEqual('moving',meeting['state'])
+        self.assertFalse(self.s.busy)
+        self.report_positions([self.a])
         self.s.scheduler.meetings(time.monotonic(),0);self.finish()
         self.assertEqual('completed',meeting['state'])
+
+    def test_world_pause_holds_an_inflight_reply_and_keeps_the_conversation_open(self):
+        waiting=threading.Event()
+        release_model=threading.Event()
+        completed=threading.Event()
+        outcomes=[]
+        speak=self.s.npcs[self.b].speak
+        def reply(*args,**kwargs):
+            waiting.set()
+            release_model.wait(5)
+            return speak(*args,**kwargs)
+
+        def run():
+            outcomes.append(self.run_at_positions(self.a,self.b,'验证暂停'))
+            completed.set()
+
+        with patch.object(self.s.npcs[self.b],'speak',side_effect=reply):
+            run_thread=threading.Thread(target=run)
+            run_thread.start()
+            try:
+                self.assertTrue(waiting.wait(5))
+                self.s.set_control(paused=True)
+                release_model.set()
+                self.assertFalse(completed.wait(.15))
+                self.assertEqual([1],[line['sequence'] for line in self.s.bus.history() if line['kind']=='dialogue_line'])
+                self.assertTrue({self.a,self.b}.issubset(self.s.busy))
+                self.assertTrue(self.s.active_conversations)
+            finally:
+                release_model.set()
+                self.s.set_control(paused=False)
+                run_thread.join(10)
+        self.assertTrue(completed.is_set())
+        self.assertTrue(outcomes[0])
 
     def test_position_report_api_rejects_partial_and_nonfinite_coordinates(self):
         room=AREAS[self.area]
@@ -272,10 +419,11 @@ class SocialTests(unittest.TestCase):
     def test_no_teleport_between_maps(self):
         other=next(x for x in ROOMS.values() if x['map_id']!=AREAS[self.area]['map_id'])
         self.s.world.set_area(self.b,other['id'])
-        self.assertIsNone(self.s.run_conversation(self.a,self.b,'不能传送'))
+        self.assertIsNone(self.run_at_positions(self.a,self.b,'不能传送'))
         self.assertEqual(other['id'],self.s.world.area_of(self.b))
 
     def test_meeting_waits_busy_and_cooldown(self):
+        self.report_positions()
         self.s.world.mark_chatted(self.a,self.b);self.s.busy.add(self.b)
         m=self.s.request_meeting(self.a,self.b)
         self.assertIs(m,self.s.request_meeting(self.b,self.a))
@@ -295,6 +443,7 @@ class SocialTests(unittest.TestCase):
         self.assertEqual('failed',m['state'])
 
     def test_two_workers_no_shared_actor_and_third_queued(self):
+        self.report_positions()
         names=list(self.s.npcs)[:6]
         meetings=[self.s.request_meeting(*names[i:i+2]) for i in (0,2,4)]
         barrier=threading.Barrier(2);original=self.s.engine.run
@@ -302,47 +451,121 @@ class SocialTests(unittest.TestCase):
         with patch.object(self.s.engine,'run',side_effect=concurrent):self.tick();self.finish()
         self.assertEqual(['completed','completed','ready'],[m['state'] for m in meetings])
         self.assertFalse(self.s.busy)
+        self.report_positions(names[4:6])
         self.tick();self.finish()
         self.assertEqual('completed',meetings[2]['state'])
 
     def test_gossip_actual_transcript_source_dedup_and_hop_limit(self):
-        self.s.run_conversation(self.a,self.b,'实验结果');self.release()
-        result=self.s.run_conversation(self.b,self.c,'转述')
+        first=self.run_at_positions(self.a,self.b,'实验结果');self.release()
+        result=self.run_at_positions(self.b,self.c,'转述')
         self.assertTrue(result['transcript'][0]['text'].startswith('听说'))
         self.assertEqual(self.c,result['gossip']['recipient'])
         self.assertIsNone(self.s.gossip_candidate(self.b,self.c))
         self.assertTrue(any(m.type=='gossip' for m in self.s.memory.get_active(self.c,50)))
+        event,=self.s.game_events.timeline(self.c)['events']
+        self.assertEqual('conversation:'+first['conversation_id'],event['source_event_id'])
+        self.assertIsNone(event['source'])
+        self.assertEqual(result['gossip'],event['result']['gossip'])
         with self.s.database() as db:db.execute('UPDATE gossip SET hops=3 WHERE holder=?',(self.c,))
         self.assertIsNone(self.s.gossip_candidate(self.c,self.d))
 
+    def test_overhearing_stores_personal_impression_only_for_nearby_real_witness(self):
+        from backend.npc import MemoryAssessment
+
+        outsider, upstairs, stale = list(self.s.npcs)[4:7]
+        room=AREAS[self.area]
+        other_room=next(r for r in AREAS.values() if r['map_id']==room['map_id'] and r['id']!=room['id'])
+        other_floor=next(r for r in AREAS.values() if r['map_id']!=room['map_id'])
+        for name, place, x in ((self.c,room,150),(self.d,room,151),(outsider,other_room,0),
+                               (upstairs,other_floor,0),(stale,room,0)):
+            self.s.report_arrival(name,map_id=place['map_id'],room_id=place['room_id'],x=x,y=0,arrived=True)
+        self.s.positions[stale]['at']-=SOCIAL.position_max_age_seconds+1
+        self.s.relations.apply_delta(self.c,self.a,79-self.s.relations.get(self.c,self.a),'测试关系')
+        self.s.memory.add(agent=self.c,content='我记得之前做过实验',type='observation',importance=0.6,game_time=480)
+        self.s.memory.add(agent=self.c,content='先核对实验条件',type='reflection',importance=0.8,game_time=480)
+        model_context=[]
+        def model(system, prompt, schema, **kwargs):
+            if schema is MemoryAssessment and '只是路过旁听' in prompt:
+                model_context.append((system,prompt))
+                return MemoryAssessment(content='他们大概弄错了样品，我当时很担心。',importance=0.62,emotion='negative')
+            return None
+
+        with patch.object(self.s.llm,'chat_json',side_effect=model):
+            result=self.run_at_positions(self.a,self.b,'聊聊实验')
+            self.s.hearing_pool.submit(lambda:None).result(timeout=5)
+
+        source='conversation:'+result['conversation_id']
+        identity=f'overheard:{source}:{self.c}'
+        memory=self.s.memory.get_by_id(identity)
+        self.assertEqual(('overheard',0.62,'negative'),(memory.type,memory.importance,memory.emotion))
+        self.assertEqual(1,len(model_context))
+        system,prompt=model_context[0]
+        self.assertEqual(self.s.cards[self.c].render_system_prompt(),system)
+        for expected in (self.a+' 79/100','我记得之前做过实验','先核对实验条件','今天实验有了新进展'):
+            self.assertIn(expected,prompt)
+        event,=self.s.game_events.timeline(self.c)['events']
+        self.assertEqual(('conversation_overheard',source,memory.content),
+                         (event['kind'],event['source_event_id'],event['result']['detail']))
+        self.assertIsNone(event['source'])
+        self.assertFalse(any('弄错了样品' in line['text'] for line in result['transcript']))
+        for name in (self.a,self.b,self.d,outsider,upstairs,stale):
+            self.assertIsNone(self.s.memory.get_by_id(f'overheard:{source}:{name}'))
+
+    def test_overhearing_samples_when_a_queued_line_becomes_audible(self):
+        self.report_positions([self.a,self.b,self.c])
+        source='conversation:test-playback'
+        now=time.monotonic()
+        for name in (self.a,self.b,self.c):
+            self.s.positions[name]['at']=now
+        playback=dict(lines=[
+            dict(start=now,end=now+1,data=dict(game_event_id=source,speaker=self.a,
+                 participants=[self.a,self.b],speech='npc_dialogue',text='进来前的台词')),
+            dict(start=now+1,end=now+2,data=dict(game_event_id=source,speaker=self.b,
+                 participants=[self.a,self.b],speech='npc_dialogue',text='进来后的台词')),
+        ])
+        self.s.positions[self.c]['x']=151
+        self.s.capture_playing_lines(playback,now)
+        self.assertNotIn(source,self.s.heard_dialogue)
+        self.s.positions[self.c]['x']=150
+        self.s.capture_playing_lines(playback,now+1)
+        self.s.capture_playing_lines(playback,now+1.2)
+        self.assertEqual([self.b+'：进来后的台词'],self.s.heard_dialogue[source][self.c]['lines'])
+
     def test_declining_gossip_keeps_information_private(self):
-        self.s.run_conversation(self.a,self.b,'实验结果');self.release()
+        self.run_at_positions(self.a,self.b,'实验结果');self.release()
         original=self.s.llm.chat_json
         def decide(*a,**kw):
             if a[2] is SocialDecision:return SocialDecision(action='chat',share_gossip=False)
             return original(*a,**kw)
-        with patch.object(self.s.llm,'chat_json',side_effect=decide):result=self.s.run_conversation(self.b,self.c,'普通聊天')
+        with patch.object(self.s.llm,'chat_json',side_effect=decide):result=self.run_at_positions(self.b,self.c,'普通聊天')
         self.assertFalse(result['gossip'])
         self.assertFalse(any(m.type=='gossip' for m in self.s.memory.get_active(self.c,50)))
 
     def test_checkpoint_resume_without_duplicate_memory_or_relation(self):
         with patch.object(self.s.engine,'_assess_relation',side_effect=RuntimeError('offline')):
-            self.assertIsNone(self.s.run_conversation(self.a,self.b,'中断'))
+            self.assertIsNone(self.run_at_positions(self.a,self.b,'中断'))
+        self.assertFalse(self.s.game_events.timeline(self.a)['events'])
         self.assertFalse(self.s.busy)
+        self.assertNotIn('conversation_partner',self.s.world_snapshot()['npcs'][self.a])
         with self.s.database() as db:run_id=db.execute('SELECT id FROM m3_runs').fetchone()[0]
         before_count=len(self.s.memory.get_active(self.a,50))
         self.s.stop();self.s=SocialService()
         self.s.world.set_area(self.a,self.area);self.s.world.set_area(self.b,self.area)
         before=self.s.relations.get(self.a,self.b)
+        self.report_positions([self.a,self.b])
         result=self.s.resume(run_id)
         self.assertTrue(result)
+        timeline=self.s.game_events.timeline(self.a)
+        self.assertEqual(['conversation:'+run_id],[event['id'] for event in timeline['events']])
+        self.assertNotIn('conversation_partner',self.s.world_snapshot()['npcs'][self.b])
         self.assertEqual(before_count,len(self.s.memory.get_active(self.a,50)))
         self.assertEqual(before+1,self.s.relations.get(self.a,self.b))
         self.release();self.s.resume(run_id)
         self.assertEqual(before+1,self.s.relations.get(self.a,self.b))
+        self.assertEqual(timeline,self.s.game_events.timeline(self.a))
 
     def test_memory_timeline_forget_and_restart(self):
-        self.s.run_conversation(self.a,self.b,'测试');self.release()
+        self.run_at_positions(self.a,self.b,'测试');self.release()
         with self.s.database() as db:
             old=db.execute('SELECT MAX(id) FROM m3_memory_history WHERE npc=?',(self.a,)).fetchone()[0]
         self.s.advance_time(4320);self.s.future.result(timeout=20)
@@ -366,9 +589,10 @@ class SocialTests(unittest.TestCase):
         client=self.client();entered=threading.Event();release=threading.Event()
         original=self.s.npcs[self.a].save_dialogue_memory
         def blocked(*a,**kw):entered.set();release.wait(timeout=10);return original(*a,**kw)
-        with client.websocket_connect('/ws/events') as ws,patch.object(self.s.npcs[self.a],'save_dialogue_memory',side_effect=blocked):
+        with client.websocket_connect('/ws/events') as ws, patch.object(SOCIAL,'bubble_seconds',0.15), \
+             patch.object(self.s.npcs[self.a],'save_dialogue_memory',side_effect=blocked):
             ws.receive_json()
-            worker=threading.Thread(target=lambda:self.s.run_conversation(self.a,self.b,'实时'))
+            worker=threading.Thread(target=lambda:self.run_at_positions(self.a,self.b,'实时'))
             worker.start()
             try:
                 self.assertTrue(entered.wait(10))
@@ -377,6 +601,34 @@ class SocialTests(unittest.TestCase):
                 self.assertEqual(6,kinds.count('dialogue_line'))
                 self.assertEqual(200,client.get('/health').status_code)
             finally:release.set();worker.join(timeout=15)
+        client.close()
+
+    def test_observed_conversation_stays_active_until_the_ordered_bubbles_drain(self):
+        client=self.client()
+        with client.websocket_connect('/ws/events') as ws, patch.object(SOCIAL,'bubble_seconds',0.35):
+            ws.receive_json()
+            worker=threading.Thread(target=lambda:self.run_at_positions(self.a,self.b,'检验播放结束'))
+            worker.start()
+            try:
+                while True:
+                    message=ws.receive_json()
+                    if message['kind']=='dialogue_line' and message['sequence']==6:
+                        break
+                run=message['conversation_id']
+                expected_end=self.s.live_lines[run]['end']
+                self.assertGreater(expected_end,time.monotonic())
+                self.assertEqual({self.a,self.b},self.s.busy)
+                self.assertEqual('active',self.s.game_events.current()[self.a]['phase'])
+                events=[line['sequence'] for line in self.s.live_dialogue() if line['conversation_id']==run]
+                self.assertGreater(len(events),1)
+                self.assertEqual(6,events[-1])
+                while ws.receive_json()['kind']!='dialogue_finished':
+                    pass
+                self.assertGreaterEqual(time.monotonic(),expected_end)
+            finally:
+                worker.join(timeout=6)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(self.s.busy)
         client.close()
 
     def test_debug_controls_and_history(self):
@@ -389,6 +641,18 @@ class SocialTests(unittest.TestCase):
         self.assertTrue(client.get('/npcs/'+self.a+'/memory/history').json())
         self.assertEqual(45,len(client.get('/social/relations').json()))
         client.close()
+
+    def test_meeting_routes_to_the_side_of_the_first_person_who_arrives(self):
+        room=ROOMS[('jishilou_floor3','R01')]
+        self.s.report_arrival(self.a,map_id=room['map_id'],room_id='R03',x=472,y=440,arrived=False)
+        self.s.report_arrival(self.b,map_id=room['map_id'],room_id=room['room_id'],x=296,y=488,arrived=True)
+        self.s.request_meeting(self.a,self.b,room['id'])
+        npcs=self.s.world_snapshot()['npcs']
+        self.assertTrue(npcs[self.b]['hold_position'])
+        point=npcs[self.a]['target_position']
+        separation=(point['x']-296)**2+(point['y']-488)**2
+        self.assertGreater(separation,0)
+        self.assertLessEqual(separation,SOCIAL.encounter_radius**2)
 
     def test_reflection_retry_reuses_insight_after_interrupted_mark(self):
         from backend.npc import InsightSchema
@@ -477,33 +741,19 @@ class SocialTests(unittest.TestCase):
         finally:self.s.clock_sample=None
 
     def test_burst_dialogue_clears_final_bubble_before_releasing_actors(self):
-        result=self.s.run_conversation(self.a,self.b,'恢复原版显示节奏')
+        result=self.run_at_positions(self.a,self.b,'恢复原版显示节奏')
         run_id=result['conversation_id']
         latest=self.s.live_lines[run_id]['data']
         self.assertEqual(6,latest['sequence'])
-        self.assertEqual([10],[part['seconds'] for part in latest['segments']])
+        self.assertTrue(latest['ordered'])
+        self.assertTrue(all(4 <= part['seconds'] <= 7 for part in latest['segments']))
         self.assertTrue(self.s.live_lines[run_id]['finished'])
         self.assertFalse(any(line['conversation_id']==run_id for line in self.s.live_dialogue()))
         self.assertEqual(1,len([e for e in self.s.bus.history() if e['kind']=='dialogue_finished' and e['conversation_id']==run_id]))
         self.assertFalse(self.s.busy)
         # 地图气泡已结束；完整台词仍可从历史查询，同一人物可以参与下一场。
-        self.assertIsNotNone(self.s.run_conversation(self.a,self.c,'继续原有社交行为'))
+        self.assertIsNotNone(self.run_at_positions(self.a,self.c,'继续原有社交行为'))
         self.assertFalse(self.s.busy)
-
-    def test_final_bubble_hold_is_bounded_and_only_for_observers(self):
-        key='visual-hold-test'
-        self.s.live_lines[key]=dict(start=time.monotonic(),end=time.monotonic()+30)
-        with patch('backend.social.time.sleep') as sleep:
-            self.s._hold_final_bubble(key)
-            sleep.assert_not_called()
-            subscriber=object()
-            self.s.bus.clients[subscriber]=None
-            try:
-                self.s._hold_final_bubble(key)
-                self.assertEqual(1,sleep.call_count)
-                self.assertGreater(sleep.call_args.args[0],0)
-                self.assertLessEqual(sleep.call_args.args[0],SOCIAL.bubble_exit_hold_seconds)
-            finally:self.s.bus.clients.pop(subscriber,None)
 
     def test_visual_end_event_is_published_before_actor_release(self):
         original=self.s.emit
@@ -512,13 +762,16 @@ class SocialTests(unittest.TestCase):
             if kind=='dialogue_finished':busy_at_end.append(set(self.s.busy))
             return original(kind,**data)
         with patch.object(self.s,'emit',side_effect=observe):
-            self.s.run_conversation(self.a,self.b,'验证气泡先于离场清除')
+            self.run_at_positions(self.a,self.b,'验证气泡先于离场清除')
         self.assertEqual(1,len(busy_at_end))
         self.assertTrue({self.a,self.b}.issubset(busy_at_end[0]))
         self.assertFalse(self.s.busy)
 
     def test_live_dialogue_reconnect_restores_latest_line_and_deduplicates(self):
-        payload=dict(conversation_id='read-test',participants=[self.a,self.b],speaker=self.a,text='先读完这句话')
+        payload=dict(conversation_id='read-test',participants=[self.a,self.b],speaker=self.a,text='先读完这句话',
+                     speech='npc_dialogue',game_event_id='conversation:read-test')
+        self.s.emit('conversation_started',conversation_id='read-test',participants=[self.a,self.b],area=self.area)
+        self.assertEqual(self.b,self.s.world_snapshot()['npcs'][self.a]['conversation_partner'])
         first=self.s.emit('dialogue_line',event_key='read-test:1',sequence=1,**payload)
         self.s.emit('dialogue_line',event_key='read-test:2',sequence=2,**payload)
         duplicate=self.s.emit('dialogue_line',event_key='read-test:1',sequence=1,**payload)
@@ -529,18 +782,25 @@ class SocialTests(unittest.TestCase):
             client=self.client()
             try:
                 with client.websocket_connect('/ws/events') as ws:
-                    live=ws.receive_json()['live']
+                    snapshot=ws.receive_json()
+                    live=snapshot['live']
                     self.assertEqual([2],[line['sequence'] for line in live])
                     self.assertEqual(1,live[0]['playback_elapsed'])
+                    self.assertEqual(self.a,snapshot['world']['npcs'][self.b]['conversation_partner'])
             finally:client.close()
+        with patch('backend.social.time.monotonic',return_value=stored['end']+1):
+            self.assertEqual([],self.s.live_dialogue())
+            self.assertEqual(self.b,self.s.world_snapshot()['npcs'][self.a]['conversation_partner'])
+        self.s.finish(self.a,self.b,run_id='read-test')
+        self.assertNotIn('conversation_partner',self.s.world_snapshot()['npcs'][self.a])
 
-    def test_original_ten_second_segments_do_not_scale_with_world_speed(self):
+    def test_bubble_duration_follows_segment_length_and_real_time(self):
         from backend.playback import dialogue_segments
-        self.assertEqual(10,dialogue_segments('你好')[0]['seconds'])
-        self.assertEqual(10,dialogue_segments('长'*60)[0]['seconds'])
+        self.assertEqual(4.1,dialogue_segments('你好')[0]['seconds'])
+        self.assertEqual(7,dialogue_segments('长'*60)[0]['seconds'])
         parts=dialogue_segments('长'*125)
         self.assertEqual([60,60,5],[len(part['text']) for part in parts])
-        self.assertEqual(30,sum(part['seconds'] for part in parts))
+        self.assertEqual([7,7,4.25],[part['seconds'] for part in parts])
         self.s.set_control(speed=8)
         self.assertEqual(parts,dialogue_segments('长'*125))
 

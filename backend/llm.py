@@ -14,6 +14,8 @@
 
 import json
 import re
+from threading import BoundedSemaphore
+from time import monotonic
 from typing import List, Optional, Type, TypeVar
 
 import httpx
@@ -32,7 +34,10 @@ class LLMClient:
     """对 OpenAI 兼容网关的薄封装。全系统共享一个实例。"""
 
     def __init__(self, cfg=CFG):
+        if cfg.max_concurrent_requests < 1:
+            raise ValueError("LLM_MAX_CONCURRENT_REQUESTS 必须大于零")
         self.cfg = cfg
+        self._request_slots = BoundedSemaphore(cfg.max_concurrent_requests)
         # M3: 未配置 key 时立即启用已有离线兜底，避免 SDK 初始化失败或长时间网络重试。
         self._client = None
         if not cfg.api_key:
@@ -79,9 +84,19 @@ class LLMClient:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
+        deadline = monotonic() + timeout if timeout is not None else None
         for attempt in range(2):  # 最多重试一次
+            remaining = None if deadline is None else deadline - monotonic()
+            if (remaining is not None and remaining <= 0) or not self._request_slots.acquire(timeout=remaining):
+                log.warning("LLM 请求在并发队列中达到时限")
+                return None
             try:
-                client = self._client.with_options(timeout=timeout,max_retries=0) if timeout is not None else self._client
+                client = self._client
+                if deadline is not None:
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        return None
+                    client = client.with_options(timeout=remaining, max_retries=0)
                 resp = client.chat.completions.create(
                     model=model,
                     messages=messages,
@@ -102,6 +117,8 @@ class LLMClient:
             except Exception as e:  # noqa: BLE001 网关异常种类不可枚举
                 log.error("LLM chat 调用失败: %s", e)
                 return None
+            finally:
+                self._request_slots.release()
         return None
 
     # ------------------------------------------------------------------
@@ -168,9 +185,10 @@ class LLMClient:
             # M3: 无 key 时使用原有关键词检索降级。
             if self._client is None:
                 return None
-            resp = self._client.embeddings.create(
-                model=self.cfg.embed_model, input=texts
-            )
+            with self._request_slots:
+                resp = self._client.embeddings.create(
+                    model=self.cfg.embed_model, input=texts
+                )
             return [item.embedding for item in sorted(resp.data, key=lambda d: d.index)]
         except Exception as e:  # noqa: BLE001
             log.error("LLM embed 调用失败: %s", e)

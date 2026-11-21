@@ -1,0 +1,127 @@
+[gd_resource type="Theme" load_steps=8 format=3]
+
+[sub_resource type="StyleBoxFlat" id="Button"]
+bg_color = Color(0.91, 0.87, 0.81, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.71, 0.63, 0.55, 1)
+content_margin_left = 10.0
+content_margin_top = 5.0
+content_margin_right = 10.0
+content_margin_bottom = 5.0
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_left = 5
+corner_radius_bottom_right = 5
+
+[sub_resource type="StyleBoxFlat" id="Hover"]
+bg_color = Color(0.91, 0.83, 0.74, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.65, 0.47, 0.33, 1)
+content_margin_left = 10.0
+content_margin_top = 5.0
+content_margin_right = 10.0
+content_margin_bottom = 5.0
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_left = 5
+corner_radius_bottom_right = 5
+
+[sub_resource type="StyleBoxFlat" id="Input"]
+bg_color = Color(0.99, 0.97, 0.94, 1)
+border_width_bottom = 1
+border_color = Color(0.67, 0.55, 0.44, 1)
+content_margin_left = 9.0
+content_margin_top = 7.0
+content_margin_right = 9.0
+content_margin_bottom = 7.0
+
+[sub_resource type="StyleBoxFlat" id="Panel"]
+bg_color = Color(0.96, 0.93, 0.89, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.75, 0.67, 0.59, 1)
+content_margin_left = 10.0
+content_margin_top = 8.0
+content_margin_right = 10.0
+content_margin_bottom = 8.0
+
+[sub_resource type="StyleBoxFlat" id="Focus"]
+bg_color = Color(0, 0, 0, 0)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.61, 0.39, 0.25, 1)
+
+[sub_resource type="StyleBoxFlat" id="Pressed"]
+bg_color = Color(0.87, 0.77, 0.67, 1)
+content_margin_left = 10.0
+content_margin_top = 5.0
+content_margin_right = 10.0
+content_margin_bottom = 5.0
+
+[sub_resource type="StyleBoxFlat" id="Disabled"]
+bg_color = Color(0.93, 0.91, 0.88, 1)
+content_margin_left = 10.0
+content_margin_top = 5.0
+content_margin_right = 10.0
+content_margin_bottom = 5.0
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_left = 5
+corner_radius_bottom_right = 5
+
+[resource]
+Button/colors/font_color = Color(0.23, 0.18, 0.14, 1)
+Button/colors/font_hover_color = Color(0.19, 0.13, 0.10, 1)
+Button/colors/font_pressed_color = Color(0.19, 0.13, 0.10, 1)
+Button/colors/font_focus_color = Color(0.19, 0.13, 0.10, 1)
+Button/colors/font_disabled_color = Color(0.48, 0.43, 0.38, 1)
+Button/styles/normal = SubResource("Button")
+Button/styles/hover = SubResource("Hover")
+Button/styles/pressed = SubResource("Pressed")
+Button/styles/focus = SubResource("Focus")
+Button/styles/disabled = SubResource("Disabled")
+OptionButton/colors/font_color = Color(0.23, 0.18, 0.14, 1)
+OptionButton/colors/font_hover_color = Color(0.19, 0.13, 0.10, 1)
+OptionButton/colors/font_pressed_color = Color(0.19, 0.13, 0.10, 1)
+OptionButton/colors/font_focus_color = Color(0.19, 0.13, 0.10, 1)
+OptionButton/colors/font_disabled_color = Color(0.48, 0.43, 0.38, 1)
+OptionButton/constants/modulate_arrow = 1
+OptionButton/styles/normal = SubResource("Button")
+OptionButton/styles/hover = SubResource("Hover")
+OptionButton/styles/pressed = SubResource("Pressed")
+OptionButton/styles/focus = SubResource("Focus")
+OptionButton/styles/disabled = SubResource("Disabled")
+LineEdit/colors/font_color = Color(0.23, 0.18, 0.14, 1)
+LineEdit/colors/font_placeholder_color = Color(0.47, 0.39, 0.32, 1)
+LineEdit/colors/caret_color = Color(0.36, 0.24, 0.17, 1)
+LineEdit/styles/normal = SubResource("Input")
+LineEdit/styles/focus = SubResource("Focus")
+TextEdit/colors/font_color = Color(0.23, 0.18, 0.14, 1)
+TextEdit/colors/font_placeholder_color = Color(0.47, 0.39, 0.32, 1)
+TextEdit/colors/caret_color = Color(0.36, 0.24, 0.17, 1)
+TextEdit/styles/normal = SubResource("Input")
+TextEdit/styles/focus = SubResource("Focus")
+Label/colors/font_color = Color(0.25, 0.20, 0.16, 1)
+RichTextLabel/colors/default_color = Color(0.25, 0.20, 0.16, 1)
+PanelContainer/styles/panel = SubResource("Panel")
+PopupMenu/colors/font_color = Color(0.23, 0.18, 0.14, 1)
+PopupMenu/colors/font_hover_color = Color(0.19, 0.13, 0.10, 1)
+PopupMenu/styles/panel = SubResource("Panel")
+PopupMenu/styles/hover = SubResource("Hover")
+TabContainer/colors/font_selected_color = Color(0.23, 0.18, 0.14, 1)
+TabContainer/colors/font_unselected_color = Color(0.31, 0.24, 0.20, 1)
+TabContainer/colors/font_hovered_color = Color(0.19, 0.13, 0.10, 1)
+TabContainer/styles/panel = SubResource("Panel")
+TabContainer/styles/tab_selected = SubResource("Pressed")
+TabContainer/styles/tab_unselected = SubResource("Button")
+TabContainer/styles/tab_hovered = SubResource("Hover")

@@ -5,6 +5,7 @@ launcher.local.bat
 # ===== 运行时生成数据（仅仓库根; 勿误伤 frontend/data/npc_roster.json）=====
 /data/
 /logs/
+/build/
 
 # ===== Python =====
 __pycache__/

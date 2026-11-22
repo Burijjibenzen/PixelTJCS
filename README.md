@@ -74,6 +74,7 @@ py -3.11 -m venv .venv
 | [docs/M4.1.md](docs/M4.1.md) | 时间/观察修正、公开资料、动态日程、公告栏、玩家会话 |
 | [docs/M4.2.md](docs/M4.2.md) | 玩家行走与近距离交互、运行边界、验收记录 |
 | [docs/M6.md](docs/M6.md) | M6 的事件与调度、社交和记忆、上帝模式、验证与接手事项 |
+| [docs/UBUNTU_WEB_HANDOFF.md](docs/UBUNTU_WEB_HANDOFF.md) | Ubuntu 后端与 Godot Web 前端迁移交接 |
 | [docs/HANDOFF.md](docs/HANDOFF.md) | 当前完成状态、待验收事项、启动和交付步骤 |
 | [校园地图改图交接](map_sources/README.md) | 三份可编辑源图、障碍与装饰划分、在线改图及 Godot 重建步骤 |
 | [docs/MAP_SPEC.md](docs/MAP_SPEC.md) | 地图格式、图层约定和早期实现记录 |

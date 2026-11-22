@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import uvicorn
+from scripts.runtime_paths import resolve_godot
 from backend import api
 from backend.config import SOCIAL
 from test_social import SocialTests
@@ -30,7 +31,7 @@ def main():
     env = dict(os.environ, APPDATA=fixture.tmp.name, ROAM_PROFILE_BACKEND=f'http://127.0.0.1:{port}',
                ROAM_PROFILE_NAMES=json.dumps([fixture.a, fixture.b]),
                ROAM_PROFILE_WORLD=json.dumps(service.world_snapshot(), ensure_ascii=False))
-    command = [os.environ.get('GODOT_EXE', str(root.parents[1] / '.tools/godot-4.5.2/Godot_v4.5.2-stable_win64_console.exe')),
+    command = [str(resolve_godot()),
                '--path', str(root / 'frontend'), '--script', str(root / 'tests/check_profile_http.gd'),
                '--log-file', str(work / '.cache/godot-profile-http.log')]
     if not env.get('ROAM_PROFILE_PREVIEW'):

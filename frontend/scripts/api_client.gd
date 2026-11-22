@@ -49,6 +49,9 @@ var position_report_interval := 0.25
 
 
 func _ready() -> void:
+	var configured_url := OS.get_environment("ROAMCHESTRA_BACKEND_URL").strip_edges().trim_suffix("/")
+	if not configured_url.is_empty():
+		backend_url = configured_url
 	_http = HTTPRequest.new()
 	_http.timeout = REQ_TIMEOUT
 	add_child(_http)

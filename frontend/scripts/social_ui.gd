@@ -217,7 +217,7 @@ func _poll_socket(delta: float) -> void:
 			reconnect_delay = 2
 			socket = WebSocketPeer.new()
 			# M3: 首次连接也请求持久事件，避免后台已生成的台词永远缺失。
-			var url := ApiClient.backend_url.replace("http://", "ws://") + "/ws/events?after=" + str(cursor)
+			var url := ApiClient.backend_url.replace("https://", "wss://").replace("http://", "ws://") + "/ws/events?after=" + str(cursor)
 			var error := socket.connect_to_url(url)
 			if error != OK:
 				_notice("对话事件连接失败：" + error_string(error))

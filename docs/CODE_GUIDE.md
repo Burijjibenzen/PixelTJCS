@@ -33,7 +33,7 @@
 
 ## 3. 快速开始
 
-Windows 先在仓库根目录创建 `.venv` 并安装依赖，再双击 [Start-Roamchestra.bat](../Start-Roamchestra.bat)。后端健康检查通过后脚本会启动 Godot。 [路径配置和联调步骤](M6.md#5-启动和验收)
+Windows 先用 Python 3.11 的 `.venv` 或 Conda 环境安装依赖，再按 [M6 启动说明](M6.md#5-启动和验收)配置本机 Python 和 Godot 路径。双击 [Start-Roamchestra.bat](../Start-Roamchestra.bat) 后，脚本会启动后端并检查健康状态，然后打开 Godot。
 
 ```bash
 # 1) 环境: Python 3.11（3.10+ 均可）
@@ -265,12 +265,11 @@ NPC 收到目标后，先走到可达的楼梯落脚点，在另一层的对应�
 
 ### 7.4 用 Godot 验证 NPC 寻路
 
-从仓库根目录打开 PowerShell，将第一行设为本机的 Godot 可执行文件。首次运行先导入资源。
+从仓库根目录打开 PowerShell，先将 `GODOT_EXE` 环境变量设为本机 Godot 可执行文件的完整路径。首次运行先导入资源。
 
 ```powershell
-$godotExe = "E:\homework\JishiTown\tools\godot-4.5\Godot_v4.5-stable_win64_console.exe"
-& $godotExe --headless --path frontend --import
-& $godotExe --headless --fixed-fps 60 --path frontend --script (Resolve-Path scripts/check_campus_navigation.gd).Path
+& $env:GODOT_EXE --headless --path frontend --import
+& $env:GODOT_EXE --headless --fixed-fps 60 --path frontend --script (Resolve-Path scripts/check_campus_navigation.gd).Path
 ```
 
 脚本检查 40 个房间落点的连通性，再运行主场景，让周冲走到四楼讲座教室、智信馆图书分馆，最后回到三楼东侧机房。每一站都核对实际位置、换层顺序和到达信号，全部通过时输出 `PASS`。

@@ -9,6 +9,7 @@ import time
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import uvicorn
+from scripts.runtime_paths import resolve_godot
 from backend import api
 from backend.agent_runtime import WhisperAction
 from backend.config import SOCIAL
@@ -31,7 +32,7 @@ def main():
     server=uvicorn.Server(uvicorn.Config(api.app,log_level='error',access_log=False))
     thread=threading.Thread(target=lambda:server.run(sockets=[sock]),daemon=True)
     env=dict(os.environ,APPDATA=str(work/'.cache/godot-user'),ROAM_NOTICE_BACKEND=f'http://127.0.0.1:{sock.getsockname()[1]}')
-    command=[os.environ.get('GODOT_EXE',str(work/'tools/godot/Godot_v4.5.2-stable_win64_console.exe')),
+    command=[str(resolve_godot()),
              '--path',str(root/'frontend'),'--disable-vsync','--fixed-fps','60','--script',str(root/'tests/check_noticeboard.gd'),
              '--log-file',str(work/'.cache/notice-board-http.log')]
     if not env.get('ROAM_NOTICE_PREVIEW'):command.append('--headless')

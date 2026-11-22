@@ -207,6 +207,8 @@ class PlayerModeTests(unittest.TestCase):
         self.assertIn(self.a,self.s.busy)
 
     def test_full_transcript_in_both_personal_memories_and_only_participants_know(self):
+        room = AREAS[self.area]
+        self.s.report_arrival(self.b, map_id=room['map_id'], room_id=room['room_id'], x=151, y=0)
         session = self.join();player = self.s.player.state()['player']
         with patch.object(self.s.llm, 'chat', return_value='我会带着实验结果来一起讨论。'):
             item = self.send(session=session)

@@ -11,6 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import httpx
 import uvicorn
+from scripts.runtime_paths import resolve_godot
 from fastapi import FastAPI
 from test_social import SocialTests
 from backend.social import install
@@ -42,7 +43,7 @@ def main():
             while not server.started and time.monotonic()<deadline:time.sleep(0.05)
             with httpx.Client(trust_env=False,timeout=3) as client:
                 response=client.get(f'http://127.0.0.1:{port}/health');response.raise_for_status()
-            command=[os.environ.get('GODOT_EXE',str(root.parents[1]/'.tools/godot-4.5.2/Godot_v4.5.2-stable_win64_console.exe')),'--headless','--path',str(root/'frontend'),
+            command=[str(resolve_godot()),'--headless','--path',str(root/'frontend'),
                 '--script',str(root/'tests/check_websocket_peer.gd'),'--log-file',str(work/'.cache/m3-real-ws.log')]
             result=subprocess.run(command,env=env,capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=45,
                                   creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))

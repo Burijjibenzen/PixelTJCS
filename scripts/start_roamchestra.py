@@ -1,6 +1,5 @@
 """Windows 本地启动入口，由项目根目录的批处理调用。"""
 
-import os
 import socket
 import subprocess
 import time
@@ -10,16 +9,16 @@ from pathlib import Path
 import httpx
 import uvicorn
 
+from scripts.runtime_paths import resolve_godot
+
 
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     frontend = root / "frontend"
-    default_godot = (
-        root.parents[1] / ".tools" / "godot-4.5.2" / "Godot_v4.5.2-stable_win64.exe"
-    )
-    godot = Path(os.environ.get("GODOT_EXE") or default_godot)
-    if not godot.is_file():
-        raise SystemExit(f"找不到 Godot：{godot}。请将 GODOT_EXE 设为 Godot 程序的完整路径。")
+    try:
+        godot = resolve_godot()
+    except FileNotFoundError as error:
+        raise SystemExit(str(error)) from error
     if not (frontend / "project.godot").is_file():
         raise SystemExit(f"找不到前端项目：{frontend / 'project.godot'}")
 

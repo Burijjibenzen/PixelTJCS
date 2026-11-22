@@ -9,6 +9,7 @@ import time
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import uvicorn
+from scripts.runtime_paths import resolve_godot
 from backend import api
 from backend.config import SOCIAL
 from test_social import SocialTests
@@ -32,7 +33,7 @@ def main():
     thread = threading.Thread(target=lambda:server.run(sockets=[sock]),daemon=True)
     env = dict(os.environ, APPDATA=fixture.tmp.name,
         ROAM_PLAYER_BACKEND=f'http://127.0.0.1:{sock.getsockname()[1]}')
-    command = [os.environ.get('GODOT_EXE',str(work/'tools/godot/Godot_v4.5.2-stable_win64_console.exe')),
+    command = [str(resolve_godot()),
         '--path',str(root/'frontend'),'--disable-vsync','--fixed-fps','60','--script',str(root/'tests/check_player_chat.gd'),
         '--log-file',str(work/'.cache/player-chat-http.log')]
     if not env.get('ROAM_PLAYER_PREVIEW'):command.append('--headless')

@@ -150,6 +150,84 @@ class SocialTests(unittest.TestCase):
                 self.assertNotIn('旧公告',str(replacement.bus.history(limit=500)))
                 self.assertFalse(any(item['source']=='manual' for item in replacement.planner.records.values()))
 
+    def test_web_entrypoint_serves_export_and_routes_api_and_events(self):
+        from backend import api
+        from backend.web import create_app
+
+        web_dir = Path(self.tmp.name) / 'web'
+        web_dir.mkdir()
+        for name in ('index.html', 'index.js', 'index.wasm', 'index.pck'):
+            (web_dir / name).write_text('test export', encoding='utf-8')
+
+        self.s.set_control(paused=True)
+        world_id = self.s.world_id
+        with patch.object(api, '_service', self.s), TestClient(create_app(web_dir)) as client:
+            self.assertEqual('test export', client.get('/').text)
+            self.assertEqual('no-cache', client.get('/').headers['cache-control'])
+            self.assertEqual('no-cache', client.get('/index.pck').headers['cache-control'])
+            self.assertEqual('application/wasm', client.get('/index.wasm').headers['content-type'])
+            health = client.get('/api/health')
+            self.assertEqual(200, health.status_code)
+            self.assertEqual('PixelTJCS', health.json()['service'])
+            self.assertEqual('PixelTJCS 校园多智能体交互系统', client.get('/api/openapi.json').json()['info']['title'])
+            report = {'npc': self.a, 'grid': 'R03'}
+            self.assertEqual(403, client.post('/api/world/report', json=report).status_code)
+            self.assertEqual(403, client.post('/api/world/speed', json={'paused': False}).status_code)
+            first_driver = 'a' * 32
+            second_driver = 'b' * 32
+            roster = list(self.s.npcs)
+            driver_headers = {'X-Observer-Driver': first_driver}
+            self.assertFalse(client.post('/api/world/observer-driver', json={'token': first_driver}).json()['assigned'])
+            stale_roster = ['旧角色', *roster[1:]]
+            self.assertFalse(client.post('/api/world/observer-driver', json={'token': first_driver, 'roster': stale_roster}).json()['assigned'])
+            self.assertTrue(client.post('/api/world/observer-driver', json={'token': first_driver, 'roster': roster}).json()['assigned'])
+            self.assertFalse(client.post('/api/world/observer-driver', json={'token': second_driver, 'roster': roster}).json()['assigned'])
+            self.assertEqual(200, client.post('/api/world/report', headers=driver_headers, json=report).status_code)
+            self.assertEqual(403, client.post('/api/world/speed', headers=driver_headers, json={'paused': False}).status_code)
+            joined = client.post('/api/player/join', json={'name': '试玩访客'})
+            self.assertEqual(200, joined.status_code)
+            self.assertEqual('同小济', joined.json()['player']['name'])
+            self.assertIsNone(joined.json()['player_token'])
+            self.assertEqual(403, client.post('/api/world/report', headers=driver_headers, json=report).status_code)
+            owner = {'X-Player-Session': joined.json()['session_id']}
+            self.assertEqual(409, client.post('/api/player/join', json={
+                'name': '试玩访客', 'player_token': joined.json()['player_token'],
+            }).status_code)
+            self.assertIsNone(client.get('/api/player').json()['session_id'])
+            self.assertEqual(200, client.post('/api/world/report', headers=owner, json=report).status_code)
+            with self.s.lock:
+                self.s.player.expire_engagement(self.s.player.session_deadline + 1)
+            self.assertEqual(403, client.post('/api/world/report', headers=owner, json=report).status_code)
+            self.assertTrue(client.post('/api/world/observer-driver', json={'token': second_driver, 'roster': roster}).json()['assigned'])
+            rejoined = client.post('/api/player/join', json={})
+            self.assertEqual(200, rejoined.status_code)
+            self.assertEqual('同小济', rejoined.json()['player']['name'])
+            self.assertEqual(joined.json()['player']['id'], rejoined.json()['player']['id'])
+            self.assertNotEqual(joined.json()['session_id'], rejoined.json()['session_id'])
+            owner = {'X-Player-Session': rejoined.json()['session_id']}
+            room = AREAS[self.area]
+            position = {'map_id': room['map_id'], 'x': 12, 'y': 34}
+            self.assertEqual(200, client.post('/api/player/position', json={
+                **position, 'room_id': room['room_id'], 'session_id': owner['X-Player-Session'],
+            }).status_code)
+            self.assertEqual(position, client.get('/api/world').json()['social']['player_position'])
+            hallway = {**position, 'x': 48}
+            self.assertEqual(200, client.post('/api/player/position', json={
+                **hallway, 'room_id': '', 'session_id': owner['X-Player-Session'],
+            }).status_code)
+            self.assertEqual(hallway, client.get('/api/world').json()['social']['player_position'])
+            self.assertIsNone(self.s.player.position['area'])
+            with client.websocket_connect('/api/ws/events') as socket:
+                observed = socket.receive_json()['world']['social']
+                self.assertEqual(world_id, observed['world_id'])
+                self.assertEqual(hallway, observed['player_position'])
+                response = client.post('/api/world/reset', headers=owner, json={'confirm': True, 'world_id': world_id})
+                self.assertEqual(200, response.status_code, response.text)
+                event = socket.receive_json()
+                while event['kind'] == 'world':
+                    event = socket.receive_json()
+                self.assertEqual('world_reset', event['kind'])
+
     def test_public_profiles_exclude_private_fields_without_model_calls(self):
         before=[]
         for card in self.s.cards.values():

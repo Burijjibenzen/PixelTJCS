@@ -1,4 +1,4 @@
-# Roamchestra 🏫 — 校园多智能体交互系统
+# PixelTJCS 🏫 — 校园多智能体交互系统
 
 以 **NPC↔NPC 自主交互**为核心的校园多智能体课程大作业系统。
 场景设定在同济大学校园（济事楼三楼、四楼与智信馆二楼），7 名学生 + 3 名导师/教务
@@ -34,14 +34,14 @@ NPC 在里面自主对话、积累记忆、互相遗忘、发展关系。
 
 ## 快速开始
 
-Windows 上可双击根目录的 `Start-Roamchestra.bat`。首次使用时，将 `launcher.local.bat.example` 复制为 `launcher.local.bat`，把 `ROAMCHESTRA_PYTHON` 指向当前 Python 或 Conda 环境的 `python.exe`，把 `GODOT_EXE` 指向 Godot 可执行文件。此本机配置不会提交到 Git。若已激活 Conda 环境或项目内有 `.venv`，Python 路径可以不填；若 Godot 在 PATH 中，Godot 路径也可以不填。脚本先启动后端，健康检查通过后打开 Godot，关闭游戏窗口后停止本次启动的后端。
+Windows 上可双击根目录的 `Start-PixelTJCS.bat`。首次使用时，将 `launcher.local.bat.example` 复制为 `launcher.local.bat`，把 `PIXELTJCS_PYTHON` 指向当前 Python 或 Conda 环境的 `python.exe`，把 `GODOT_EXE` 指向 Godot 可执行文件。此本机配置不会提交到 Git。若已激活 Conda 环境或项目内有 `.venv`，Python 路径可以不填；若 Godot 在 PATH 中，Godot 路径也可以不填。脚本先启动后端，健康检查通过后打开 Godot，关闭游戏窗口后停止本次启动的后端。
 
-前端默认连接 `http://127.0.0.1:8000`。后端在另一地址时，运行 Godot 前设置 `ROAMCHESTRA_BACKEND_URL`（如 `http://服务器地址:8000`）；HTTP 和 WebSocket 会使用同一地址。
+前端默认连接 `http://127.0.0.1:8000`。后端在另一地址时，运行 Godot 前设置 `PIXELTJCS_BACKEND_URL`（如 `http://服务器地址:8000`）；HTTP 和 WebSocket 会使用同一地址。
 
 `scripts/run_demo.py` 是单独的命令行演示，会初始化运行数据库。带存档的日常启动使用双击脚本或手动启动双端。
 
 ```bash
-cd Roamchestra
+cd PixelTJCS
 pip install -r requirements.txt
 copy .env.example .env       # 填入你的 API key
 # 可选的命令行演示（会初始化运行数据库）：python scripts/run_demo.py

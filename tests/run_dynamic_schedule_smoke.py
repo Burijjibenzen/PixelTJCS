@@ -18,7 +18,7 @@ from test_social import SocialTests
 def main():
     fixture=SocialTests();fixture.setUp();service=fixture.s
     root=Path(__file__).resolve().parents[1];work=root.parent
-    subject='周冲'
+    subject='自嘲熊'
     service.world.inject_event('去智信馆图书分馆查资料',[subject])
     service.planner.tick(time.monotonic(),0)
     @api.app.post('/test/dynamic/advance')

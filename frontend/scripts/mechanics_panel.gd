@@ -38,7 +38,7 @@ func _ready() -> void:
 	var heading := HBoxContainer.new()
 	body.add_child(heading)
 	var title := Label.new()
-	title.text = "Roamchestra · 核心机制"
+	title.text = "PixelTJCS · 核心机制"
 	title.add_theme_font_size_override("font_size", 22)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	heading.add_child(title)
@@ -73,7 +73,7 @@ func _ready() -> void:
 发布是公开事件；角色走近并阅读后才形成个人记忆。阅读触发新的自主动作时，角色可能自言自语。
 
 [b]5. 玩家模式[/b]
-玩家默认不在世界中。加入后可在主地图行走，看到「按E交互」时可与白边标出的角色交谈或查看告示栏。走到楼梯箭头即可换层，按 P 把镜头拉回自己。交谈记录、双方记忆和关系原因会保存，离开只关闭当前会话。
+玩家默认不在世界中。加入后可在主地图行走，看到「按E交互」时可与白边标出的角色交谈或查看告示栏。靠近楼梯时箭头会高亮，按 E 换层。按 P 把镜头拉回自己。交谈记录、双方记忆和关系原因会保存，离开只关闭当前会话。
 
 [b]6. 上帝模式[/b]
 可以发布公告，也可以用悄悄话指派一个角色前往地点、执行活动、原地停留或找人交谈。重置世界恢复第 1 天和初始位置，并清空本轮存档。

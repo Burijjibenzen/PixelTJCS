@@ -216,6 +216,8 @@ class DynamicSchedule:
         return [m for m in self.s.active_meetings() if self.meeting_eligible(m)]
 
     def meeting_eligible(self,meeting):
+        if any(self.s.player.holds(name) for name in (meeting['a'], meeting['b'])):
+            return False
         if any(self.manual(n) for n in (meeting['a'],meeting['b'])):
             return False
         if meeting.get('tier')=='medium' and meeting['state'] not in ('talking','deciding'):
@@ -594,6 +596,8 @@ class DynamicSchedule:
         if name in self.s.reading_waiting:return '已安排阅读公告，等待当前任务结束'
         if name in self.s.reading:return '正在阅读公告，稍后继续行程'
         if name in self.s.busy or name in self.s.reflecting:return '正在交谈或整理思绪，稍后继续行程'
+        if any(name in pair for pair in self.s.active_conversations.values()):
+            return '等待当前对话结束'
         if not self.s.available(name,name):return '等待角色空闲'
         own_meeting=preempting['meeting_id'] if preempting else ''
         if item['source'] not in HIGH_SOURCES and any(name in (m['a'],m['b']) and m['id']!=own_meeting
@@ -801,6 +805,8 @@ class DynamicSchedule:
         return set(self.encounter_waits) | {self.records[key]['npc'] for key in self.encounter_waits.values()}
 
     def _within_encounter_range(self,item,now):
+        if self.s.player.holds(item['npc']) or self.s.player.holds(item['partner']):
+            return False
         first,second=(self.s.positions.get(name) for name in (item['npc'],item['partner']))
         return (first and second and first['map_id']==second['map_id']
                 and all(0<=now-p['at']<=SOCIAL.position_max_age_seconds for p in (first,second))
@@ -966,24 +972,42 @@ class DynamicSchedule:
             if not self.s.event_runtime.model_ready:
                 self._scan_memories()
         rate=self.s.speed/SOCIAL.speed
+        clock=self.s.world.clock.now
+        expiry_notice=max(ACTIVITY.pending_expiry_notice_minutes,self.s.speed*SOCIAL.tick_seconds)
         progress=[]
         routine_progress=set()
         pursuits={}
         for name in self.s.npcs:
             if not self.s.onstage(name):
                 continue
-            item=self.current_item(name) or self._resume_suspended(name)
+            held=self.s.player.holds(name)
+            item=self.current_item(name)
+            if item is None and not held:
+                item=self._resume_suspended(name)
+            can_pause_baseline=(item is not None and item['source']=='baseline'
+                                and item['state']!='evaluating' and not item['meeting_id']
+                                and now-self.s.seen.get(name,-1e9)<SOCIAL.presence_seconds)
             candidates=[]
             for candidate in self.records.values():
-                if candidate['npc']!=name or candidate['state']!='scheduled' or candidate['starts_at']>self.s.world.clock.now:
+                if candidate['npc']!=name or candidate['state']!='scheduled' or candidate['starts_at']>clock:
                     continue
-                if self.s.world.clock.now>self.deadline(candidate):
-                    self._state(candidate,'timed_out','尚未出发时活动窗口已过')
+                remaining=self.deadline(candidate)-clock
+                if remaining<0:
+                    detail='尚未出发时活动窗口已过'
+                    if held:
+                        detail='等待玩家交谈结束时活动窗口已过'
+                    elif item and item['tier']=='high':
+                        detail='等待玩家指令完成时活动窗口已过'
+                    elif name in self.s.busy or any(name in pair for pair in self.s.active_conversations.values()):
+                        detail='等待当前对话结束时活动窗口已过'
+                    self._state(candidate,'timed_out',detail)
                     continue
-                tier=candidate['tier']
-                if tier=='medium' and name in self.routine_turns:
+                if candidate['tier']=='medium' and name in self.routine_turns and not (
+                        remaining<=expiry_notice and (item is None or can_pause_baseline)):
                     continue
                 candidates.append(candidate)
+            if held:
+                continue
             candidates.sort(key=self.queue_key)
             winner=candidates[0] if candidates else None
             if winner and winner['tier']=='high' and name in self.s.busy:
@@ -1003,7 +1027,10 @@ class DynamicSchedule:
                         winner['reason']='玩家指派接管，结束公告阅读'
                     self.s.boards.cancel(name)
                 feasible=not self._blocked(name,winner,preempting=item)
-                if (item and feasible and TIERS.index(tier)>TIERS.index(item['tier'])
+                imminent_baseline_switch=(tier=='low' and can_pause_baseline and winner['source']!='baseline'
+                                          and self.deadline(winner)-clock<=expiry_notice)
+                if (item and feasible and (tier=='high' or name not in self.encounter_waits)
+                        and (TIERS.index(tier)>TIERS.index(item['tier']) or imminent_baseline_switch)
                         and (item['state']!='evaluating' or tier=='high')):
                     if item['tier']=='low':
                         self._suspend_routine(item)
@@ -1032,7 +1059,8 @@ class DynamicSchedule:
                 self._state(item,'waiting','暂挂，等待当前事件结束')
                 continue
             if item['source'] in ('event_followup','whisper') and item['partner']:
-                pursuits[name]=item
+                if not self.s.player.holds(item['partner']):
+                    pursuits[name]=item
                 continue
             if item['meeting_id']:
                 meeting=self.s.meeting(item['meeting_id'])

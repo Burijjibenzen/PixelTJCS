@@ -53,7 +53,7 @@ func verify() -> void:
 				child.profile_panel.set_process(false)
 	for actor in main.npcs:
 		actor.set_physics_process(false)
-	var subject = main.npcs.filter(func(actor): return actor.npc_name == "周冲").front()
+	var subject = main.npcs.filter(func(actor): return actor.npc_name == "自嘲熊").front()
 	subject.set_physics_process(true)
 	var visited: Array[String] = []
 	subject.floor_changed.connect(func(actor): visited.append(actor.map_id))

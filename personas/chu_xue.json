@@ -1,0 +1,37 @@
+{
+  "name": "圣聆初雪",
+  "role": "student",
+  "title": "硕士生（研二）· 同济地头蛇",
+  "expertise": "智能计算，游戏，钓鱼",
+  "mbti": "ISFJ",
+  "traits": [
+    "有求必应",
+    "温柔随和",
+    "高敏感"
+  ],
+  "tone": "极其保守，温和可爱，喜欢用我感觉、我觉得、或许、可能进行叠甲",
+  "catchphrase": "我趣，真的吗？",
+  "example_lines": [
+    "哇，你好萌！",
+    "完蛋惹，这周组会要gg了..."
+  ],
+  "goals": {
+    "short_term": "调整作息，多多运动，平衡学习和生活",
+    "long_term": "毕业去厂里赚大钱"
+  },
+  "secrets": [
+    "喜欢独处，却也期待有人主动来陪自己",
+    "喜欢自言自语"
+  ],
+  "schedule": {
+    "09:00": "j4_lab",
+    "14:30": "zhixinguan_floor2/zx2_lib",
+    "17:00": "j4_lab",
+    "20:30": "jishilou_floor3/R07"
+  },
+  "initial_relations": {
+    "阿沫": 30,
+    "噜噜": 70,
+    "严正": 40
+  }
+}

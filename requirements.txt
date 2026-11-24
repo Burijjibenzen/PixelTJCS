@@ -1,4 +1,4 @@
-# Roamchestra 后端依赖（Python 3.10+）
+# PixelTJCS 后端依赖（Python 3.10+）
 # 安装: pip install -r requirements.txt
 
 # Web 框架与服务器（供 Godot 前端 / 演示脚本调用的 HTTP 接口）

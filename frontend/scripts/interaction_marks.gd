@@ -76,12 +76,16 @@ func _draw() -> void:
 		var center: Vector2 = arrow.point.round()
 		if not clip.has_point(center):
 			continue
+		var highlighted: bool = arrow.get("highlighted", false)
+		var ink := Color("#ffe49a") if highlighted else Color("#88e9ff")
 		draw_rect(Rect2(center - Vector2(8, 8), Vector2(16, 16)), Color("#24364b"))
-		draw_rect(Rect2(center - Vector2(7, 7), Vector2(14, 14)), Color("#88e9ff"), false, 1.0)
-		draw_rect(Rect2(center + Vector2(-1, -5), Vector2(2, 6)), Color("#88e9ff"))
+		if highlighted:
+			draw_rect(Rect2(center - Vector2(9, 9), Vector2(18, 18)), Color.WHITE, false, width)
+		draw_rect(Rect2(center - Vector2(7, 7), Vector2(14, 14)), ink, false, 1.0)
+		draw_rect(Rect2(center + Vector2(-1, -5), Vector2(2, 6)), ink)
 		draw_colored_polygon(PackedVector2Array([
 			center + Vector2(-4, 0), center + Vector2(4, 0), center + Vector2(0, 5),
-		]), Color("#88e9ff"))
+		]), ink)
 		_draw_text(arrow.text, center + Vector2(11, 5), 12, false)
 
 func _draw_sprite_outline(sprite: AnimatedSprite2D, width: float) -> void:

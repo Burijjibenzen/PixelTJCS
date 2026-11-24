@@ -9,11 +9,14 @@
 import logging
 import os
 
+from backend import PROJECT_NAME
+
 # 日志目录: <项目根>/logs/（已被 .gitignore 排除）
 _LOG_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"
 )
 _CONFIGURED = False
+_LOGGER_NAME = PROJECT_NAME.lower()
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -29,17 +32,17 @@ def get_logger(name: str) -> logging.Logger:
         console.setFormatter(fmt)
 
         file_handler = logging.FileHandler(
-            os.path.join(_LOG_DIR, "roamchestra.log"), encoding="utf-8"
+            os.path.join(_LOG_DIR, f"{_LOGGER_NAME}.log"), encoding="utf-8"
         )
         file_handler.setFormatter(fmt)
 
-        root = logging.getLogger("roamchestra")
+        root = logging.getLogger(_LOGGER_NAME)
         root.setLevel(logging.INFO)
         root.addHandler(console)
         root.addHandler(file_handler)
         root.propagate = False
         _CONFIGURED = True
 
-    # 子 logger 挂在 roamchestra 命名空间下，自动继承 handler
+    # 子 logger 自动继承项目日志的 handler。
     short = name.split(".")[-1] if "." in name else name
-    return logging.getLogger(f"roamchestra.{short}")
+    return logging.getLogger(f"{_LOGGER_NAME}.{short}")

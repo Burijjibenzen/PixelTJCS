@@ -14,12 +14,15 @@
 
 import json
 import re
-from threading import BoundedSemaphore
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from threading import Condition
 from time import monotonic
 from typing import List, Optional, Type, TypeVar
 
 import httpx
-from openai import OpenAI
+from openai import APITimeoutError, OpenAI
 from pydantic import BaseModel
 
 from backend.config import LLM as CFG
@@ -28,6 +31,22 @@ from backend.logger import get_logger
 log = get_logger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+_player_priority = ContextVar("player_model_priority", default=False)
+
+
+@dataclass
+class PlayerTurnRoute:
+    slots: ExitStack
+    local: bool = False
+
+
+@contextmanager
+def prioritize_player_reply():
+    token = _player_priority.set(True)
+    try:
+        yield
+    finally:
+        _player_priority.reset(token)
 
 
 class LLMClient:
@@ -37,7 +56,19 @@ class LLMClient:
         if cfg.max_concurrent_requests < 1:
             raise ValueError("LLM_MAX_CONCURRENT_REQUESTS 必须大于零")
         self.cfg = cfg
-        self._request_slots = BoundedSemaphore(cfg.max_concurrent_requests)
+        self._slot_condition = Condition()
+        self._in_flight = 0
+        self._foreground_waiters = 0
+        self._player_turns = 0
+        self._player_route = ContextVar("player_model_route", default=None)
+        self._player_api = None
+        if cfg.player_api_key:
+            if cfg.player_api_timeout <= 0:
+                raise ValueError("LLM_PLAYER_API_TIMEOUT 必须大于零")
+            self._player_api = OpenAI(
+                api_key=cfg.player_api_key, base_url=cfg.player_api_base_url, max_retries=0,
+                http_client=httpx.Client(trust_env=False, timeout=cfg.player_api_timeout),
+            )
         # M3: 未配置 key 时立即启用已有离线兜底，避免 SDK 初始化失败或长时间网络重试。
         self._client = None
         if not cfg.api_key:
@@ -55,6 +86,86 @@ class LLMClient:
             ),
         )
 
+
+    @contextmanager
+    def player_turn(self):
+        with ExitStack() as slots, prioritize_player_reply():
+            route = PlayerTurnRoute(slots)
+            token = self._player_route.set(route)
+            try:
+                if self._player_api is None:
+                    self._use_local_for_turn(route)
+                yield
+            finally:
+                self._player_route.reset(token)
+
+    def _use_local_for_turn(self, route):
+        route.slots.enter_context(self.reserve_player_slot())
+        route.local = True
+
+    def _try_player_api(self, system, user, max_tokens, temperature, timeout, schema=None):
+        route = self._player_route.get()
+        if route is None or route.local:
+            return None
+        budget = self.cfg.player_api_timeout if timeout is None else min(timeout, self.cfg.player_api_timeout)
+        failure = "响应为空或格式无效"
+        try:
+            response = self._player_api.with_options(timeout=budget).chat.completions.create(
+                model=self.cfg.player_api_model, max_tokens=max_tokens, temperature=temperature,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            )
+            content = (response.choices[0].message.content or '').strip()
+            result = self._try_parse_json(content, schema) if schema else content
+            if result:
+                return result
+        except Exception as error:  # Gateway errors should fall back without exposing credentials or prompts.
+            failure = type(error).__name__
+        log.warning("玩家 API 调用未完成，当前轮次切换到本地模型 (%s)", failure)
+        self._use_local_for_turn(route)
+        return None
+
+    @contextmanager
+    def reserve_player_slot(self):
+        """Keep one slot available between the calls belonging to a player turn."""
+        with self._slot_condition:
+            self._player_turns += 1
+        try:
+            yield
+        finally:
+            with self._slot_condition:
+                self._player_turns -= 1
+                self._slot_condition.notify_all()
+
+    @contextmanager
+    def _slot(self, deadline):
+        foreground = _player_priority.get()
+        limit = self.cfg.max_concurrent_requests
+
+        def can_start():
+            if foreground:
+                return self._in_flight < limit
+            background_limit = limit - int(self._player_turns > 0)
+            return not self._foreground_waiters and self._in_flight < background_limit
+
+        with self._slot_condition:
+            self._foreground_waiters += int(foreground)
+            try:
+                acquired = self._slot_condition.wait_for(
+                    can_start,
+                    timeout=None if deadline is None else max(0, deadline - monotonic()),
+                ) and (deadline is None or monotonic() < deadline)
+                if acquired:
+                    self._in_flight += 1
+            finally:
+                self._foreground_waiters -= int(foreground)
+                self._slot_condition.notify_all()
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                with self._slot_condition:
+                    self._in_flight -= 1
+                    self._slot_condition.notify_all()
 
     # ------------------------------------------------------------------
     # 基础对话
@@ -74,51 +185,52 @@ class LLMClient:
           1) content 为 null 且 finish_reason=length → token 不够，加倍重试一次
           2) 网络异常 → 记录日志后返回 None
         """
-        # M3: 离线模式复用上层预设台词/记忆兜底。
-        if self._client is None:
-            return None
         model = model or self.cfg.chat_model
         max_tokens = max_tokens or self.cfg.max_tokens
         temperature = self.cfg.temperature if temperature is None else temperature
+        result = self._try_player_api(system, user, max_tokens, temperature, timeout)
+        if result is not None:
+            return result
+        # M3: 离线模式复用上层预设台词/记忆兜底。
+        if self._client is None:
+            return None
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
         deadline = monotonic() + timeout if timeout is not None else None
         for attempt in range(2):  # 最多重试一次
-            remaining = None if deadline is None else deadline - monotonic()
-            if (remaining is not None and remaining <= 0) or not self._request_slots.acquire(timeout=remaining):
-                log.warning("LLM 请求在并发队列中达到时限")
-                return None
-            try:
+            with self._slot(deadline) as acquired:
+                if not acquired:
+                    log.warning("LLM 请求排队超时 (model=%s)", model)
+                    return None
                 client = self._client
                 if deadline is not None:
                     remaining = deadline - monotonic()
                     if remaining <= 0:
                         return None
                     client = client.with_options(timeout=remaining, max_retries=0)
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-                choice = resp.choices[0]
-                content = choice.message.content
-                if content:  # 正常拿到正文
-                    return content.strip()
-                # 正文为空: 推理模型思考没写完就被截断了 → 加倍 token 重试
-                if choice.finish_reason == "length" and attempt == 0:
-                    max_tokens *= 2
-                    log.warning("推理被截断(content=null)，max_tokens 加倍重试")
-                    continue
-                log.warning("LLM 返回空正文 (finish_reason=%s)", choice.finish_reason)
-                return None
-            except Exception as e:  # noqa: BLE001 网关异常种类不可枚举
-                log.error("LLM chat 调用失败: %s", e)
-                return None
-            finally:
-                self._request_slots.release()
+                try:
+                    resp = client.chat.completions.create(
+                        model=model, messages=messages, max_tokens=max_tokens, temperature=temperature,
+                    )
+                    choice = resp.choices[0]
+                    content = choice.message.content
+                    if content:
+                        return content.strip()
+                    if choice.finish_reason == "length" and attempt == 0:
+                        max_tokens *= 2
+                        log.warning("推理被截断(content=null)，max_tokens 加倍重试")
+                        continue
+                    log.warning("LLM 返回空正文 (finish_reason=%s)", choice.finish_reason)
+                    return None
+                except APITimeoutError:
+                    log.error("LLM 网关调用超时 (model=%s, player_priority=%s, caller_timeout=%s)",
+                              model, _player_priority.get(), timeout)
+                    return None
+                except Exception as e:  # noqa: BLE001 网关异常种类不可枚举
+                    log.error("LLM chat 调用失败: %s", e)
+                    return None
         return None
 
     # ------------------------------------------------------------------
@@ -144,6 +256,9 @@ class LLMClient:
             f"{system}\n\n【输出要求】只输出一个 JSON 对象，不要输出任何其他文字、"
             f"不要用 markdown 代码块。字段必须符合以下 schema:\n{schema_hint}"
         )
+        result = self._try_player_api(sys_prompt, user, self.cfg.max_tokens, 0.3, timeout, schema=schema)
+        if result is not None:
+            return result
         options = {'timeout':timeout} if timeout is not None else {}
         raw = self.chat(sys_prompt, user, model=model, temperature=0.3, **options)
         if raw is None:
@@ -183,9 +298,9 @@ class LLMClient:
             return []
         try:
             # M3: 无 key 时使用原有关键词检索降级。
-            if self._client is None:
+            if self._client is None or not self.cfg.embed_model:
                 return None
-            with self._request_slots:
+            with self._slot(None):
                 resp = self._client.embeddings.create(
                     model=self.cfg.embed_model, input=texts
                 )

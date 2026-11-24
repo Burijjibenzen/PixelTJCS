@@ -52,7 +52,8 @@ func _ready() -> void:
 	var drag := preload("res://scripts/window_drag.gd").new()
 	add_child(drag)
 	drag.bind($Background, bar.get_node("Title"))
-	var fit_window := func(): $Background.size = Vector2(1080, 582).min(get_viewport().get_visible_rect().size)
+	var fit_window := func():
+		$Background.size = Vector2(1080, 582).min(get_viewport().get_visible_rect().size - Vector2(32, 32))
 	get_viewport().size_changed.connect(fit_window)
 	fit_window.call()
 	stage.gui_input.connect(_stage_input)
@@ -155,12 +156,16 @@ func _frame_floor() -> void:
 					world.position[axis] = (stage.size[axis] - extent[axis]) * 0.5
 			return
 
+func _fit_scale() -> float:
+	var extent := Vector2(_cell(grid.size)) * TILE
+	var available := (stage.size - Vector2(56, 88)).max(Vector2.ONE)
+	return minf(minf(available.x / extent.x, available.y / extent.y), 5.0)
+
 func fit() -> void:
-	if not map_node or stage.size.x < 1 or stage.size.y < 1:
+	if not map_node:
 		return
 	var extent := Vector2(_cell(grid.size)) * TILE
-	var zoom := minf((stage.size.x - 24) / extent.x, (stage.size.y - 24) / extent.y)
-	world.scale = Vector2.ONE * clampf(zoom, 0.04, 5.0)
+	world.scale = Vector2.ONE * _fit_scale()
 	world.position = (stage.size - extent * world.scale) * 0.5
 
 func _stage_resized() -> void:
@@ -338,8 +343,11 @@ func _stage_input(event: InputEvent) -> void:
 				_select_cell(Vector2i((map_pos / TILE).floor()))
 			MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN:
 				var factor := 1.22 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0 / 1.22
-				world.scale = Vector2.ONE * clampf(world.scale.x * factor, 0.06, 5.0)
-				world.position = event.position - map_pos * world.scale
+				if world.scale.x * factor <= _fit_scale():
+					fit()
+				else:
+					world.scale = Vector2.ONE * minf(world.scale.x * factor, 5.0)
+					world.position = event.position - map_pos * world.scale
 	stage.accept_event()
 
 func _unhandled_key_input(event: InputEvent) -> void:

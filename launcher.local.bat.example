@@ -1,6 +1,6 @@
 @echo off
 rem Copy this file to launcher.local.bat and edit the paths for this computer.
-if not defined ROAMCHESTRA_PYTHON set "ROAMCHESTRA_PYTHON=C:\path\to\python.exe"
+if not defined PIXELTJCS_PYTHON set "PIXELTJCS_PYTHON=C:\path\to\python.exe"
 if not defined GODOT_EXE set "GODOT_EXE=C:\path\to\Godot_v4.5.2-stable_win64.exe"
-rem For a separate backend, set ROAMCHESTRA_BACKEND_URL before launching Godot.
-rem set "ROAMCHESTRA_BACKEND_URL=http://127.0.0.1:8000"
+rem For a separate backend, set PIXELTJCS_BACKEND_URL before launching Godot.
+rem set "PIXELTJCS_BACKEND_URL=http://127.0.0.1:8000"

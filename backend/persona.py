@@ -25,7 +25,7 @@ PERSONA_DIR = os.path.join(
 class PersonaCard:
     """一张人格卡的全部字段（与 personas/*.json 一一对应）"""
 
-    name: str  # 角色全名（唯一 ID，如 "陈卷"）
+    name: str  # 角色全名（唯一 ID，如 "噜噜"）
     role: str  # 身份类别: student / advisor / staff
     title: str  # 具体头衔，如 "博士生（博四）"、"教授/大导师"
     expertise: str = ""  # 擅长领域

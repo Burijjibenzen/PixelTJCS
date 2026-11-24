@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 import test_social as fixtures
 from backend.player_mode import PlayerError, PlayerMode, PlayerRelationImpact
-from backend.config import PLAYER, SOCIAL
+from backend.config import NOTICEBOARD, PLAYER, SOCIAL
+from backend.noticeboards import BOARDS
 from backend.world import AREAS
 
 
@@ -114,7 +115,7 @@ class PlayerModeTests(unittest.TestCase):
         event=next(row for row in self.s.game_events.timeline(self.a)['events'] if row['kind']=='player_conversation')
         self.assertEqual('cancelled',event['result']['status'])
 
-    def test_whisper_interrupts_active_player_conversation(self):
+    def test_whisper_waits_for_player_to_end_active_conversation(self):
         from backend.agent_runtime import WhisperAction
 
         session=self.join()
@@ -125,7 +126,7 @@ class PlayerModeTests(unittest.TestCase):
             speaking.set()
             if not answer.wait(5):
                 raise AssertionError('test did not release model')
-            return '过期回复'
+            return '我先回答你的问题'
 
         with patch.object(self.s.npcs[self.a],'speak',side_effect=reply):
             turn=self.s.player.submit(session,self.a,'你好','whisper')
@@ -135,14 +136,18 @@ class PlayerModeTests(unittest.TestCase):
                 with self.s.lock:
                     command=self.s.planner.whisper(self.a,WhisperAction(type='stay'))
                     self.s.planner.tick(time.monotonic(),0)
-                self.assertIs(command,self.s.planner.current_item(self.a))
-                self.assertIsNone(self.s.player.state(session)['engaged_npc'])
+                self.assertEqual('scheduled', command['state'])
+                self.assertEqual(self.a, self.s.player.state(session)['engaged_npc'])
             finally:
                 answer.set()
             future.result(timeout=5)
         result=self.s.player.turn(session,turn['id'])
-        self.assertEqual(('failed',None,{}),(result['status'],result['reply'],result['memories']))
-        self.assertIn('接管',result['error'])
+        self.assertEqual(('completed', '我先回答你的问题'), (result['status'], result['reply']))
+        self.s.planner.tick(time.monotonic(),0)
+        self.assertEqual('scheduled', command['state'])
+        self.s.player.disengage(session)
+        self.s.planner.tick(time.monotonic(),0)
+        self.assertIs(command,self.s.planner.current_item(self.a))
 
     def test_engagement_expires_after_abandoned_window(self):
         session=self.join()
@@ -195,16 +200,77 @@ class PlayerModeTests(unittest.TestCase):
         self.s.scheduler.meetings(time.monotonic(),1)
         self.assertEqual('moving',meeting['state'])
 
-    def test_waiting_meeting_expires_instead_of_blocking_queue_forever(self):
+    def test_meeting_wait_budget_pauses_while_player_is_engaged(self):
         session=self.join()
         meeting=self.s.request_meeting(self.a,self.b)
         self.s.player.engage(session,self.a)
         self.s.scheduler.meetings(time.monotonic(),SOCIAL.meeting_wait_timeout-1)
         self.assertEqual('waiting',meeting['state'])
         self.s.scheduler.meetings(time.monotonic(),2)
+        self.assertEqual('waiting',meeting['state'])
+        self.assertEqual(0,meeting['wait_seconds'])
+        self.assertIn(self.a,self.s.busy)
+        self.s.player.disengage(session)
+        self.s.busy.add(self.b)
+        self.s.scheduler.meetings(time.monotonic(),SOCIAL.meeting_wait_timeout+1)
         self.assertEqual('failed',meeting['state'])
         self.assertNotIn(meeting,self.s.active_meetings())
-        self.assertIn(self.a,self.s.busy)
+
+    def test_player_takes_priority_over_active_and_queued_assignments(self):
+        session = self.join()
+        planner = self.s.planner
+        self.assertTrue(planner.command(self.a, self.area))
+        planner.tick(time.monotonic(), 0)
+        activity = planner.current_item(self.a)
+        self.assertEqual('manual', activity['source'])
+        self.s.player.engage(session, self.a)
+        self.assertTrue(planner.command(self.b, self.area))
+        before = activity['travel_elapsed']
+        planner.tick(time.monotonic(), 5)
+        self.assertTrue(self.s.world_snapshot()['npcs'][self.a]['player_engaged'])
+        self.assertFalse(self.s.world_snapshot()['npcs'][self.b]['player_engaged'])
+        self.assertEqual('manual', planner.current_item(self.b)['source'])
+        self.assertEqual(before, activity['travel_elapsed'])
+        self.s.player.position = None
+        self.assertEqual(self.a, self.s.player.engage(session, self.a)['engaged_npc'])
+        self.s.player.disengage(session)
+        planner.tick(time.monotonic(), 1)
+        self.assertIs(activity, planner.current_item(self.a))
+        self.assertGreater(activity['travel_elapsed'], before)
+
+    def test_player_pauses_and_resumes_the_same_notice_read(self):
+        session = self.join()
+        board = next(iter(BOARDS.values()))
+        self.s.boards.publish(board['id'], '下午有一个校园活动')
+        self.s.report_arrival(self.a, map_id=board['map_id'], room_id=board['room_id'],
+                              x=board['x'], y=board['y'] + 32, arrived=True)
+        self.s.player.report_position(session, board['map_id'], board['room_id'],
+                                      board['x'], board['y'] + 32)
+        self.s.boards.start_read(self.a, board['id'])
+        reading = self.s.boards.sessions[self.a]
+        remaining = reading['remaining']
+        self.s.player.engage(session, self.a)
+        self.s.boards.tick(time.monotonic(), NOTICEBOARD.read_seconds)
+        self.assertNotIn(self.a, self.s.boards.sessions)
+        self.assertEqual(remaining, reading['remaining'])
+        self.s.player.disengage(session)
+        self.s.boards.tick(time.monotonic(), 0)
+        self.assertIs(reading, self.s.boards.sessions[self.a])
+
+    def test_player_interrupts_a_running_npc_conversation_and_preserves_the_meeting(self):
+        session = self.join()
+        meeting = self.s.request_meeting(self.a, self.b)
+        meeting['state'] = 'talking'
+        run = 'npc-conversation'
+        self.s.cast_duos[run] = ((self.a, self.b), 'high', meeting['id'])
+        self.s.active_conversations[run] = (self.a, self.b)
+        self.s.busy.update((self.a, self.b))
+        self.s.player.engage(session, self.a)
+        self.assertNotIn(run, self.s.cast_duos)
+        self.assertNotIn(run, self.s.active_conversations)
+        self.assertTrue(self.s.player.holds(self.a))
+        self.assertNotIn(self.b, self.s.busy)
+        self.assertEqual('waiting', meeting['state'])
 
     def test_full_transcript_in_both_personal_memories_and_only_participants_know(self):
         room = AREAS[self.area]
@@ -413,6 +479,9 @@ class PlayerModeTests(unittest.TestCase):
                 self.assertEqual(409,client.post('/player/join',json={'name':'测试访客'}).status_code)
                 self.assertEqual(session,client.post('/player/join',json={'name':'测试访客',
                     'player_token':joined['player_token']}).json()['session_id'])
+                # The browser refreshes both positions continuously while these requests run.
+                self.assertEqual(200,client.post('/player/position',json=position).status_code)
+                self.s.report_arrival(self.a,map_id=room['map_id'],room_id=room['room_id'],x=0,y=0)
                 self.assertEqual(self.a,client.post('/player/engage',json={'session_id':session,
                     'npc':self.a}).json()['engaged_npc'])
                 payload = dict(session_id=session,npc=self.a,message='接口你好',request_id='http')

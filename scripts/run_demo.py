@@ -1,14 +1,14 @@
 """命令行演示脚本 —— 答辩主入口（不依赖 Godot 前端）
 
 演示故事线（对应需求文档的答辩演示脚本）:
-    场景一  导师召见: 严正 批评 陈卷 实验进度 → 对话 + 记忆 + 关系
-    场景二  实验室吐槽: 陈卷 遇到 林摸摸，情绪传染 → 八卦源头
-    场景三  情报传播: 何快讯 从 苏小新 处打听/交换消息 → 八卦接力
+    场景一  导师召见: 严正 批评 噜噜 实验进度 → 对话 + 记忆 + 关系
+    场景二  实验室吐槽: 噜噜 遇到 林摸摸，情绪传染 → 八卦源头
+    场景三  情报传播: 辍学熊 与 阿沫 在茶水间交换消息 → 八卦接力
     时间快进 3 天 → 遗忘检查（衰减/容量）+ 反思压缩
-    最后展示: 陈卷的记忆面板（活跃 vs 已遗忘）+ 全员关系矩阵
+    最后展示: 噜噜的记忆面板（活跃 vs 已遗忘）+ 全员关系矩阵
 
 运行:
-    cd Roamchestra
+    cd PixelTJCS
     python scripts/run_demo.py          # 联网完整演示
     python scripts/run_demo.py --quick  # 缩短对话轮次，快速跑通链路
 
@@ -94,7 +94,7 @@ def print_relations(service: GameService) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Roamchestra 命令行演示")
+    parser = argparse.ArgumentParser(description="PixelTJCS 命令行演示")
     parser.add_argument("--quick", action="store_true",
                         help="快速模式: 对话 1 回合（默认 2 回合）")
     args = parser.parse_args()
@@ -103,51 +103,51 @@ def main() -> None:
         WORLD.max_rounds = 1
         print("⚡ 快速模式: 每场对话 1 回合")
 
-    banner("Roamchestra 校园多智能体交互系统 · M1 演示")
+    banner("PixelTJCS 校园多智能体交互系统 · M1 演示")
     service = GameService(fresh_db=True)
     print(f"\n🌍 世界开局: {service.world.clock.fmt()}")
     for npc in service.npc_list():
         print(f"  👤 {npc['name']}（{npc['title']}）@ {npc['area']}")
 
     # ================= 场景一: 导师召见 =================
-    banner("场景一 · 导师召见：严正 批评 陈卷")
+    banner("场景一 · 导师召见：严正 批评 噜噜")
     service.goto("严正", "zx4_yan")
-    service.goto("陈卷", "zx4_yan")
-    service.world.inject_event("严正在办公室召见陈卷，要听实验进展汇报",
-                               ["严正", "陈卷"], "zx4_yan")
+    service.goto("噜噜", "zx4_yan")
+    service.world.inject_event("严正在办公室召见噜噜，要听实验进展汇报",
+                               ["严正", "噜噜"], "zx4_yan")
     result = service.run_conversation(
-        "严正", "陈卷", "导师召见学生汇报进度，严正对进度不满意，语气严厉")
+        "严正", "噜噜", "导师召见学生汇报进度，严正对进度不满意，语气严厉")
     if result:
         print_transcript(result)
 
     # ================= 场景二: 实验室吐槽 =================
-    banner("场景二 · 实验室吐槽：陈卷 × 林摸摸")
-    service.goto("陈卷", "j3_lab")
+    banner("场景二 · 实验室吐槽：噜噜 × 林摸摸")
+    service.goto("噜噜", "j3_lab")
     service.goto("林摸摸", "j3_lab")
     result = service.run_conversation(
-        "陈卷", "林摸摸", "陈卷刚被导师批评，情绪低落，在工位遇到林摸摸想吐槽")
+        "噜噜", "林摸摸", "噜噜刚被导师批评，情绪低落，在工位遇到林摸摸想吐槽")
     if result:
         print_transcript(result)
 
     # ================= 场景三: 情报传播 =================
-    banner("场景三 · 情报传播：何快讯 × 苏小新")
-    service.goto("何快讯", "j3_pantry")
-    service.goto("苏小新", "j3_pantry")
+    banner("场景三 · 情报传播：辍学熊 × 阿沫")
+    service.goto("辍学熊", "j3_pantry")
+    service.goto("阿沫", "j3_pantry")
     result = service.run_conversation(
-        "何快讯", "苏小新", "茶水间偶遇，何快讯想打听严老师组里最近发生的事")
+        "辍学熊", "阿沫", "茶水间偶遇，辍学熊好奇严老师组里最近在忙什么，和阿沫聊起实验室近况")
     if result:
         print_transcript(result)
 
     # ================= 日常观察: 琐事入库（遗忘演示素材） =================
     banner("日常观察: 角色们各自记下几件琐事（低重要性记忆）")
     observations = {
-        "陈卷": [("路过公告栏看到周五羽毛球团体赛的海报，想组队但没空", 0.20),
+        "噜噜": [("路过公告栏看到周五羽毛球团体赛的海报，想组队但没空", 0.20),
                  ("食堂麻辣香锅排队太长，随便扒了两口就回实验室", 0.15)],
         "林摸摸": [("茶水间微波炉坏了，热饭排了十分钟队", 0.25),
                    ("编译又挂了，摸鱼刷了会儿手机", 0.20)],
-        "何快讯": [("听说三楼打印机换新了，刷校园卡就能用", 0.20),
+        "辍学熊": [("听说三楼打印机换新了，刷校园卡就能用", 0.20),
                    ("傍晚操场有人踢球，好像是研究生联赛", 0.15)],
-        "苏小新": [("图书馆四楼靠窗的座位下午人最少", 0.20),
+        "阿沫": [("图书馆四楼靠窗的座位下午人最少", 0.20),
                    ("开题报告模板在学院官网哪里下载还没搞清楚", 0.30)],
         "严正": [("行政楼门口的玉兰开了，今年开得早", 0.15),
                  ("评审意见里有一条措辞比较尖锐，改天再回复", 0.35)],
@@ -166,8 +166,8 @@ def main() -> None:
     print(f"   🗄️ 容量淘汰: {stats['forget'].get('forgotten_evict', 0)} 条")
 
     # ================= 记忆面板 =================
-    banner("记忆可视化: 陈卷 的记忆面板")
-    print_memory_panel(service, "陈卷")
+    banner("记忆可视化: 噜噜 的记忆面板")
+    print_memory_panel(service, "噜噜")
     banner("记忆可视化: 林摸摸 的记忆面板")
     print_memory_panel(service, "林摸摸")
 

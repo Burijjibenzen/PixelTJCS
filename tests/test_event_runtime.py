@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 import test_social as fixtures
 from backend.agent_runtime import ConversationConsent, EventAssessment, WhisperAction
+from backend.event_runtime import EventRuntime
+from backend.game_events import GameEvent
 from backend.social import SocialService
 from backend.world import AREAS, J3, J4, ZX2
 
@@ -15,6 +17,26 @@ class EventRuntimeTests(unittest.TestCase):
     setUp = fixtures.SocialTests.setUp
     tearDown = fixtures.SocialTests.tearDown
     report_positions = fixtures.SocialTests.report_positions
+
+    def test_restart_closes_focus_for_a_removed_npc(self):
+        removed = '已替换的角色'
+        room = AREAS[self.area]
+        now = self.s.world.clock.now
+        event = GameEvent('old-activity', 'activity', now, removed, (removed,),
+                          room['map_id'], room['room_id'], 'area', self.area,
+                          {'title': '调整名册前的活动'}, {}, None)
+        with self.s.database() as db:
+            self.s.game_events.begin(db, event, 'active')
+            self.s.game_events.set_focus(db, removed, event.id, [], now)
+
+        runtime = EventRuntime(self.s)
+        self.addCleanup(runtime.stop)
+        self.assertNotIn(removed, self.s.game_events.current())
+        with self.s.database() as db:
+            self.assertEqual((now,), db.execute(
+                'SELECT ended_at FROM npc_event_spans WHERE actor=?', (removed,)).fetchone())
+            self.assertEqual((now,), db.execute(
+                'SELECT ended_at FROM game_events WHERE id=?', (event.id,)).fetchone())
 
     def focus(self, name=None):
         return self.s.game_events.current()[name or self.a]
@@ -137,6 +159,70 @@ class EventRuntimeTests(unittest.TestCase):
         self.assertIs(command,planner.current_item(self.a))
         self.assertEqual('high',self.focus()['tier'])
         self.assertEqual('cancelled',first['state'])
+
+    def test_imminent_activity_can_pause_baseline_and_resume_it_afterwards(self):
+        for source in ('rule', 'event'):
+            with self.subTest(source=source):
+                planner=self.s.planner
+                now=self.s.world.clock.now
+                baseline=planner._make(self.a,'baseline',self.area,now,'baseline','基础作息')
+                planner._start(baseline)
+                planner.routine_turns.add(self.a)
+                activity=planner._make(self.a,'research',self.area,now,source,'限时活动')
+                activity.update(appointment_at=now+40,hold_position=True)
+                planner.tick(time.monotonic(),0)
+                self.assertIs(baseline,planner.current_item(self.a))
+
+                self.s.world.clock.advance(15)
+                planner.tick(time.monotonic(),0)
+                self.assertIs(activity,planner.current_item(self.a))
+                self.assertEqual('suspended',baseline['state'])
+                planner.cancel(self.a,activity['id'],'测试结束')
+                planner.tick(time.monotonic(),0)
+                self.assertIs(baseline,planner.current_item(self.a))
+                planner.cancel(self.a,baseline['id'],'测试结束')
+
+    def test_imminent_activity_waits_for_dialogue_and_player_command(self):
+        planner=self.s.planner
+        now=self.s.world.clock.now
+        baseline=planner._make(self.a,'baseline',self.area,now,'baseline','基础作息')
+        planner._start(baseline)
+        activity=planner._make(self.a,'research',self.area,now,'event','限时活动')
+        activity['appointment_at']=now+10
+
+        with patch.dict(self.s.active_conversations, {'ongoing': (self.a, self.b)}):
+            planner.tick(time.monotonic(),0)
+            self.assertIs(baseline,planner.current_item(self.a))
+            self.assertEqual('scheduled',activity['state'])
+
+        command=planner.whisper(self.a,WhisperAction(type='stay'))
+        planner.tick(time.monotonic(),0)
+        self.assertIs(command,planner.current_item(self.a))
+        self.assertEqual('scheduled',activity['state'])
+
+        self.s.world.clock.advance(11)
+        planner.tick(time.monotonic(),0)
+        self.assertIs(command,planner.current_item(self.a))
+        self.assertEqual('timed_out',activity['state'])
+        self.assertIn('等待玩家指令',activity['detail'])
+
+    def test_player_dialogue_keeps_imminent_activity_queued_until_deadline(self):
+        planner=self.s.planner
+        now=self.s.world.clock.now
+        activity=planner._make(self.a,'research',self.area,now,'event','限时活动')
+        activity['appointment_at']=now+10
+        with patch.object(self.s.player,'holds',side_effect=lambda name: name==self.a):
+            planner.tick(time.monotonic(),0)
+            self.assertIsNone(planner.current_item(self.a))
+            self.assertEqual('scheduled',activity['state'])
+
+            self.s.world.clock.advance(11)
+            planner.tick(time.monotonic(),0)
+            self.assertEqual('timed_out',activity['state'])
+            self.assertIn('等待玩家交谈',activity['detail'])
+
+        planner.tick(time.monotonic(),0)
+        self.assertIsNot(activity,planner.current_item(self.a))
 
     def test_go_to_lab_requires_arrival_and_survives_restart(self):
         item=self.library()

@@ -10,6 +10,7 @@ signal actor_stage_changed(npc: NPC)
 signal control_error(message: String)
 
 const BACKEND := "http://127.0.0.1:8000"
+const PLAYER_CONFIG_PATH := "user://pixeltjcs-player.cfg"
 const POLL_INTERVAL := 1.0   # 轮询周期(秒)
 const REQ_TIMEOUT := 1.5     # 单请求超时(秒)
 const FAIL_LIMIT := 3        # 连续失败多少次判定离线
@@ -17,6 +18,13 @@ const BASE_SPEED := 10.0
 const SPEED_OPTIONS := [10.0, 20.0, 40.0, 60.0]  # 游戏分钟/现实秒；对应原速的1/2/4/6倍。
 
 var backend_online := false
+var web_mode := OS.has_feature("web")
+var player_session := ""
+var _observer_token := ""
+var _observer_until := 0
+var _observer_poll := 0.0
+var _observer_pending := false
+var _observer_http: HTTPRequest
 var backend_url := BACKEND  # 测试/自托管可覆盖；默认开发地址不变。
 var backend_time := "第1天 08:00:00"
 var display_minutes := 480.0
@@ -49,9 +57,16 @@ var position_report_interval := 0.25
 
 
 func _ready() -> void:
-	var configured_url := OS.get_environment("ROAMCHESTRA_BACKEND_URL").strip_edges().trim_suffix("/")
-	if not configured_url.is_empty():
-		backend_url = configured_url
+	if web_mode:
+		var browser_window := JavaScriptBridge.get_interface("window")
+		backend_url = str(browser_window.location.origin) + "/api"
+	else:
+		var configured_url := OS.get_environment("PIXELTJCS_BACKEND_URL").strip_edges()
+		if configured_url.is_empty():
+			configured_url = OS.get_environment("ROAMCHESTRA_BACKEND_URL").strip_edges()
+		if not configured_url.is_empty():
+			backend_url = configured_url.trim_suffix("/")
+		_migrate_player_config()
 	_http = HTTPRequest.new()
 	_http.timeout = REQ_TIMEOUT
 	add_child(_http)
@@ -64,7 +79,76 @@ func _ready() -> void:
 	_http_adv.timeout = 5.0
 	add_child(_http_adv)
 	_http_adv.request_completed.connect(_on_advance_done)
+	_observer_http = HTTPRequest.new()
+	_observer_http.timeout = REQ_TIMEOUT
+	add_child(_observer_http)
+	_observer_http.request_completed.connect(_observer_driver_done)
 
+func _migrate_player_config() -> void:
+	if FileAccess.file_exists(PLAYER_CONFIG_PATH):
+		return
+	var old_path := OS.get_user_data_dir().get_base_dir().path_join("Roamchestra/roamchestra-player.cfg")
+	if FileAccess.file_exists(old_path):
+		var result := DirAccess.copy_absolute(old_path, ProjectSettings.globalize_path(PLAYER_CONFIG_PATH))
+		if result != OK:
+			push_warning("无法迁移原有玩家身份设置，错误码 %d" % result)
+
+func can_control_world() -> bool:
+	return not web_mode or not player_session.is_empty()
+
+func can_drive_npcs() -> bool:
+	return can_control_world() or Time.get_ticks_msec() < _observer_until
+
+func set_player_session(session: String) -> void:
+	if player_session == session:return
+	player_session = session
+	if web_mode:
+		_observer_until = 0
+		_observer_poll = 0.0
+		_clear_position_reports()
+
+func _clear_position_reports() -> void:
+	_http_post.cancel_request()
+	_sending_position.clear()
+	_pending_positions.clear()
+	_confirmed_positions.clear()
+	_point_targets.clear()
+
+func _observer_driver_tick(delta: float) -> void:
+	if not web_mode or not backend_online or not player_session.is_empty():
+		return
+	if last_world.get("social", {}).get("player_occupied", false):
+		return
+	_observer_poll -= delta
+	if _observer_poll > 0.0 or _observer_pending:
+		return
+	_observer_poll = 2.5
+	if _observer_token.is_empty():
+		_observer_token = Crypto.new().generate_random_bytes(16).hex_encode()
+	var roster: Array[String] = []
+	for npc in _npcs:
+		if is_instance_valid(npc):
+			roster.append(npc.npc_name)
+	_observer_pending = _observer_http.request(backend_url + "/world/observer-driver", world_headers(),
+		HTTPClient.METHOD_POST, JSON.stringify({"token": _observer_token, "roster": roster})) == OK
+
+func _observer_driver_done(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	_observer_pending = false
+	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		return
+	var reply = JSON.parse_string(body.get_string_from_utf8())
+	if reply is Dictionary and reply.get("assigned", false) and not can_control_world() \
+			and not last_world.get("social", {}).get("player_occupied", false):
+		_observer_until = Time.get_ticks_msec() + 6000
+	elif _observer_until != 0:
+		_observer_until = 0
+		_clear_position_reports()
+
+func world_headers() -> PackedStringArray:
+	var headers := PackedStringArray(["Content-Type: application/json"])
+	if web_mode and not player_session.is_empty():
+		headers.append("X-Player-Session: " + player_session)
+	return headers
 
 ## main.gd 生成 NPC 后注入引用
 func setup(npcs: Array) -> void:
@@ -83,6 +167,7 @@ func _place_initial_npcs(data: Dictionary) -> void:
 
 func _process(delta: float) -> void:
 	_advance_display_clock(delta)
+	_observer_driver_tick(delta)
 	_position_timer -= delta
 	if backend_online and _position_timer <= 0.0:
 		_position_timer = position_report_interval
@@ -137,6 +222,9 @@ func apply_stream_world(data: Dictionary) -> void:
 func _apply_world(data: Dictionary) -> void:
 	_fail_count = 0
 	var social: Dictionary = data.get("social", {})
+	if social.get("player_occupied", false) and _observer_until != 0:
+		_observer_until = 0
+		_clear_position_reports()
 	var next_world: String = social.get("world_id", "")
 	if not next_world.is_empty():
 		if next_world == _previous_world_id:
@@ -155,8 +243,8 @@ func _apply_world(data: Dictionary) -> void:
 			_clock_initialized = false
 			_clock_correction = 0.0
 			_place_initial_npcs(data)
-			if FileAccess.file_exists("user://roamchestra-player.cfg"):
-				ConfigFile.new().save("user://roamchestra-player.cfg")
+			if FileAccess.file_exists(PLAYER_CONFIG_PATH):
+				ConfigFile.new().save(PLAYER_CONFIG_PATH)
 			if get_tree().current_scene != null:
 				_initial_world = data.duplicate(true)
 				get_tree().paused = false
@@ -209,7 +297,11 @@ func _apply_world(data: Dictionary) -> void:
 			actor_stage_changed.emit(npc)
 		if not npc.on_stage:
 			continue
-		npc.social_busy = bool(info.get("busy", false))
+		if not can_drive_npcs():
+			npc.apply_spectator_position(info)
+			npc.social_busy = bool(info.get("busy", false))
+			continue
+		npc.social_busy = bool(info.get("busy", false)) or bool(info.get("player_engaged", false))
 		npc.hold_position(bool(info.get("hold_position", false)))
 		npc.encounter_wait = str(info.get("encounter_wait", ""))
 		if npc.position_held:
@@ -272,7 +364,7 @@ func _send_world_control(path: String, payload: Dictionary) -> void:
 	if _speed_pending:
 		return
 	_speed_pending = true
-	var error := _http_adv.request(backend_url + path, ["Content-Type: application/json"], HTTPClient.METHOD_POST,
+	var error := _http_adv.request(backend_url + path, world_headers(), HTTPClient.METHOD_POST,
 		JSON.stringify(payload))
 	if error != OK:
 		_speed_pending = false
@@ -280,7 +372,7 @@ func _send_world_control(path: String, payload: Dictionary) -> void:
 
 
 func report_arrival(npc, refresh := false) -> void:
-	if not backend_online or not npc.on_stage:
+	if not backend_online or not npc.on_stage or not can_drive_npcs():
 		return
 	var room := Game.room_id_at(npc.global_position, npc.map_id)
 	var info: Dictionary = last_world.get("npcs", {}).get(npc.npc_name, {})
@@ -312,19 +404,26 @@ func report_arrival(npc, refresh := false) -> void:
 
 
 func _pump_report() -> void:
-	if not backend_online or not _sending_position.is_empty() or _pending_positions.is_empty():
+	if not backend_online or not can_drive_npcs() or not _sending_position.is_empty() or _pending_positions.is_empty():
 		return
 	var who: String = _pending_positions.keys()[0]
 	_sending_position = _pending_positions[who]
 	_pending_positions.erase(who)
+	var headers := world_headers()
+	if not can_control_world():
+		headers.append("X-Observer-Driver: " + _observer_token)
 	var error := _http_post.request(backend_url + "/world/report",
-		["Content-Type: application/json"], HTTPClient.METHOD_POST, JSON.stringify(_sending_position))
+		headers, HTTPClient.METHOD_POST, JSON.stringify(_sending_position))
 	if error != OK:
 		_sending_position = {}  # 下一次轮询会重新读取角色的实际位置
 
 
 func _on_report_done(result: int, code: int, _headers: PackedStringArray,
 		body: PackedByteArray) -> void:
+	if code == 403 and not can_control_world():
+		_observer_until = 0
+		_clear_position_reports()
+		return
 	var response = null if body.is_empty() else JSON.parse_string(body.get_string_from_utf8())
 	if result == HTTPRequest.RESULT_SUCCESS and code == 200 and not _sending_position.is_empty():
 		# busy 表示服务端本次没有处理位置；解除占用后仍需重报，不能缓存为已确认。

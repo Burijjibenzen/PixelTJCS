@@ -6,9 +6,12 @@ signal floor_changed(npc)
 
 enum S { IDLE, WANDER, WALK }
 const SPEED := 55.0
+const SPRITE_CELL := Vector2i(48, 70)
 
 # 后端处理与短暂离场停留期间暂停移动；气泡结束事件先于恢复行走。
 var social_busy := false
+var player_chat_hold := false
+var spectator_target := Vector2.INF
 var position_held := false
 var encounter_wait := ""
 var on_stage := true
@@ -28,26 +31,59 @@ var _sections: Array = []
 var _section_i := 0
 var _wander_timer := 1.0
 var _blocked_time := 0.0
+var _spectator_origin := Vector2.ZERO
+var _spectator_duration := 1.0
+var _spectator_sample_age := 1.0
 
 @onready var sprite: AnimatedSprite2D = $Sprite
 @onready var label: Label = $NameLabel
 
-func setup(id: String, display_name: String, char_id: int, home: String, tint: Color, home_map: String = Game.FLOOR3) -> void:
+func setup(id: String, display_name: String, char_id: int, home: String, tint: Color,
+		home_map: String = Game.FLOOR3, sheet_file: String = "") -> void:
 	npc_id = id
 	npc_name = display_name
 	home_room = home
 	home_map_id = home_map
 	map_id = home_map
 	goal_map_id = home_map
-	sprite.sprite_frames = load("res://scenes/char_%d.tres" % char_id)
+	var frames := _sheet_frames(sheet_file) if not sheet_file.is_empty() else null
+	sprite.sprite_frames = frames if frames else load("res://scenes/char_%d.tres" % char_id)
+	sprite.play("idle")
 	sprite.modulate = tint
 	label.text = display_name
+
+static func _sheet_frames(file_name: String) -> SpriteFrames:
+	var sheet := load("res://assets/characters/" + file_name) as Texture2D
+	if sheet == null or sheet.get_size() != Vector2(SPRITE_CELL * Vector2i(6, 5)):
+		push_error("NPC 精灵图需要 6 列 × 5 行，每格 48 × 70 像素：" + file_name)
+		return null
+	var frames := SpriteFrames.new()
+	frames.remove_animation("default")
+	var directions := ["down", "left", "right", "up"]
+	for index in range(directions.size()):
+		_add_sheet_animation(frames, "idle_" + directions[index], sheet, index, 0, 1)
+		_add_sheet_animation(frames, "walk_" + directions[index], sheet, 0, index + 1, 6)
+	frames.add_animation("idle")
+	frames.set_animation_speed("idle", 5.0)
+	frames.add_frame("idle", frames.get_frame_texture("idle_down", 0))
+	return frames
+
+static func _add_sheet_animation(frames: SpriteFrames, animation: StringName, sheet: Texture2D,
+		column: int, row: int, count: int) -> void:
+	frames.add_animation(animation)
+	frames.set_animation_speed(animation, 5.0)
+	for index in range(count):
+		var frame := AtlasTexture.new()
+		frame.atlas = sheet
+		frame.region = Rect2(Vector2(Vector2i(column + index, row) * SPRITE_CELL), Vector2(SPRITE_CELL))
+		frame.filter_clip = true
+		frames.add_frame(animation, frame)
 
 func is_travelling() -> bool:
 	return not _sections.is_empty()
 
 func movement_locked() -> bool:
-	return not on_stage or social_busy or position_held or not encounter_wait.is_empty()
+	return not on_stage or social_busy or player_chat_hold or position_held or not encounter_wait.is_empty()
 
 func hold_position(held: bool) -> void:
 	if held and not position_held:
@@ -60,6 +96,7 @@ func reset_to(floor_id: String, room: String) -> void:
 	_sections.clear()
 	_idle()
 	social_busy = false
+	player_chat_hold = false
 	position_held = false
 	encounter_wait = ""
 	map_id = floor_id
@@ -98,7 +135,30 @@ func go_to(world_pos: Vector2) -> bool:
 func _start_trip(target_map: String, rid: String, target: Vector2) -> bool:
 	if movement_locked():
 		return false
-	var planned := Game.route(map_id, global_position, target_map, target)
+	var origin := global_position
+	var planned := Game.route(map_id, origin, target_map, target)
+	var cell := Game.cell_of(origin, map_id)
+	if planned.is_empty() and Game.is_blocked(cell, map_id):
+		# A restored position or collision slide can leave the feet on a blocked tile.
+		var room := Game.room_id_at(origin, map_id)
+		var best_distance := INF
+		var restart_at := origin
+		for step: Vector2i in [Vector2i.UP, Vector2i.DOWN, Vector2i.LEFT, Vector2i.RIGHT]:
+			var neighbor := cell + step
+			if Game.is_blocked(neighbor, map_id):
+				continue
+			var point := Game.world_of(neighbor, map_id)
+			var distance := origin.distance_squared_to(point)
+			if distance >= best_distance or (not room.is_empty() and Game.room_id_at(point, map_id) != room):
+				continue
+			var recovery := Game.route(map_id, point, target_map, target)
+			if not recovery.is_empty():
+				best_distance = distance
+				planned = recovery
+				restart_at = point
+		if not planned.is_empty():
+			global_position = restart_at
+			reset_physics_interpolation()
 	if planned.is_empty():
 		return false
 	goal_map_id = target_map
@@ -117,7 +177,45 @@ func _start_section() -> void:
 	_blocked_time = 0.0
 	state = S.WALK
 
+func apply_spectator_position(info: Dictionary) -> void:
+	var sample: Dictionary = info.get("position", {})
+	var floor: String = sample.get("map_id", info.get("map_id", ""))
+	if not Game.floor_data.has(floor):return
+	var point := Game.map_offset(floor) + Vector2(float(sample.get("x", 0)), float(sample.get("y", 0)))
+	if sample.is_empty():
+		var room: String = info.get("room_id", "")
+		if not Game.has_room(floor, room):return
+		point = Game.nav_world_of(room, floor)
+	if spectator_target == Vector2.INF or map_id != floor:
+		var room := Game.room_id_at(point, floor)
+		if room.is_empty():
+			room = str(Game.all_room_ids(floor)[0])
+		reset_to(floor, room)
+		goal_room = ""
+		global_position = point
+		_spectator_origin = point
+		_spectator_duration = 1.0
+		_spectator_sample_age = 0.0
+		reset_physics_interpolation()
+		floor_changed.emit(self)
+	elif spectator_target != point:
+		_spectator_origin = global_position
+		_spectator_duration = clampf(_spectator_sample_age, 0.25, 1.5)
+		_spectator_sample_age = 0.0
+	spectator_target = point
+
 func _physics_process(delta: float) -> void:
+	if not ApiClient.can_drive_npcs():
+		velocity = Vector2.ZERO
+		if spectator_target != Vector2.INF:
+			_spectator_sample_age += delta
+			var previous := global_position
+			var progress := minf(_spectator_sample_age / _spectator_duration, 1.0)
+			global_position = _spectator_origin.lerp(spectator_target, progress)
+			velocity = (global_position - previous) / delta
+		_play(_walk_anim() if velocity.length_squared() > 64.0 else "idle")
+		return
+	spectator_target = Vector2.INF
 	var rate := ApiClient.time_scale()
 	sprite.speed_scale = rate
 	# M3: 不调用 _idle()，避免清掉正在行走的路线。

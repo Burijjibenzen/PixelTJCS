@@ -36,6 +36,8 @@ class SocialService(GameService):
         self.reading_waiting=set()
         self.notice_approaching=set()
         self.positions={}  # 临时实际坐标，不持久化；与WebSocket心跳在线状态分开。
+        self.observer_driver = None
+        self.observer_driver_until = 0.0
         self.meetings=[];self.live_lines={};self.future=None
         self.heard_dialogue={}
         self.hearing_pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='overheard-memory')
@@ -392,6 +394,27 @@ class SocialService(GameService):
         with self.lock:
             for name in self.seen.keys()-self.offstage:self.seen[name]=time.monotonic()
 
+    def claim_observer_driver(self, token):
+        with self.lock:
+            now = time.monotonic()
+            if self.player.session:
+                return False
+            if self.observer_driver != token and now < self.observer_driver_until:
+                return False
+            self.observer_driver = token
+            self.observer_driver_until = now + 8.0
+            return True
+
+    def can_report_web_positions(self, session, observer):
+        with self.lock:
+            if self.player.session:
+                return self.player.owns_session(session)
+            return bool(observer and observer == self.observer_driver and time.monotonic() < self.observer_driver_until)
+
+    def revoke_observer_driver(self):
+        self.observer_driver = None
+        self.observer_driver_until = 0.0
+
     def active_meetings(self):
         return [m for m in self.meetings if m['state'] not in ('completed','cancelled','failed')]
 
@@ -443,28 +466,28 @@ class SocialService(GameService):
             self.conversation_context.reset(conversation_token)
             self.cast_context.reset(token)
 
-    def _interrupt_conversation(self,run,reason,status,*,before_speech=False):
+    def _interrupt_conversation(self,run,reason,status,*,resume_meeting=False):
         with self.conversation_condition:
             pair,_,meeting_id=self.cast_duos.pop(run)
             self.busy.difference_update(pair)
             self.live_lines.pop(run,None)
             meeting=self.meeting(meeting_id)
             if meeting:
-                meeting.update(state='waiting' if before_speech else 'cancelled',detail=reason)
+                meeting.update(state='waiting' if resume_meeting else 'cancelled',detail=reason)
             self.event_runtime.end_external('conversation:'+run,status,reason)
             self.emit('dialogue_finished',conversation_id=run,participants=list(pair),interrupted=True)
             self.conversation_condition.notify_all()
 
-    def preempt_conversation(self,name,reason,*,before_speech=False):
+    def preempt_conversation(self,name,reason,*,before_speech=False,player_priority=False):
         for run,(pair,tier,_) in self.cast_duos.items():
             if name not in pair:
                 continue
             if before_speech and (tier=='high' or run in self.active_conversations or run in self.live_lines
                                   or run in self.scheduler.event_talks):
                 return False
-            if tier=='high' and self.planner.encounter_waits.get(name)!=run:
+            if not player_priority and tier=='high' and self.planner.encounter_waits.get(name)!=run:
                 return False
-            self._interrupt_conversation(run,reason,'interrupted',before_speech=before_speech)
+            self._interrupt_conversation(run,reason,'interrupted',resume_meeting=before_speech or player_priority)
             future=self.scheduler.event_talks.pop(run,None)
             if future is not None:
                 future.cancel()
@@ -475,7 +498,15 @@ class SocialService(GameService):
                 if reverse and reverse['partner']==item['npc'] and reverse['tier']!='high':
                     self.planner.finish_event_talk(reverse,'cancelled',reason,shared_event_id='conversation:'+run)
             return True
-        return not before_speech and self.player.interrupt(name,reason)
+        return not (before_speech or player_priority) and self.player.interrupt(name,reason)
+
+    def take_player_focus(self, name):
+        reason = '玩家发起交谈，暂缓原安排'
+        self.preempt_conversation(name, reason, player_priority=True)
+        for pursuit_id, (event, _) in list(self.planner.encounter_requests.items()):
+            if name in (event.actor, event.target_id):
+                self.planner.finish_encounter(pursuit_id, 'interrupted', reason)
+        self.boards.suspend_for_encounter(name, time.monotonic())
 
     @contextmanager
     def cast_step(self):
@@ -917,6 +948,10 @@ class SocialService(GameService):
                 npc['on_stage']=self.onstage(name)
                 npc['cast_version']=self.cast_versions[name]
                 npc['busy']=name in self.busy or name in self.reflecting or name in self.reading or name in self.reading_waiting
+                npc['player_engaged']=self.player.holds(name)
+                position=self.positions.get(name)
+                if position:
+                    npc['position']={key:position[key] for key in ('map_id', 'x', 'y')}
                 npc['activity']=self.planner.describe(name)
                 npc['current_event']=current_events[name]
                 if name in partners:
@@ -957,8 +992,14 @@ class SocialService(GameService):
                                 result['npcs'][name]['target_position']=point
             result['social']=dict(meetings=[dict(m) for m in self.meetings],**self.control_state(),epoch=self.epoch,
                                  world_id=self.world_id,
+                                 player_occupied=self.player.session is not None,
                                  position_report_seconds=SOCIAL.position_report_seconds,
                                  model_configured=bool(getattr(getattr(self.llm,'cfg',None),'api_key','')))
+            player_position = self.player.position
+            if self.player.session and player_position:
+                result['social']['player_position'] = dict(
+                    map_id=player_position['map_id'],
+                    x=player_position['x'], y=player_position['y'])
             for name,trip in self.boards.approaches.items():
                 board=BOARDS[trip['board_id']]
                 npc=result['npcs'][name]
@@ -1082,7 +1123,8 @@ def install(app,get_service):
         async def receive():
             while True:
                 data=await ws.receive_json()
-                if isinstance(data,dict) and data.get('kind')=='ping':
+                if (not ws.scope.get('pixeltjcs.web')
+                        and isinstance(data,dict) and data.get('kind')=='ping'):
                     s.heartbeat()
         receiver=asyncio.create_task(receive())
         try:

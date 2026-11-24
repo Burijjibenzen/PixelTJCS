@@ -1,4 +1,4 @@
-# Roamchestra 代码说明文档（交接指南）
+# PixelTJCS 代码说明文档（交接指南）
 
 > 写给接手项目的同学/队友。读完本文档，你应当能独立跑通系统、看懂每个
 > 模块在干什么、并且知道往哪里加新功能。
@@ -33,11 +33,11 @@
 
 ## 3. 快速开始
 
-Windows 先用 Python 3.11 的 `.venv` 或 Conda 环境安装依赖，再按 [M6 启动说明](M6.md#5-启动和验收)配置本机 Python 和 Godot 路径。双击 [Start-Roamchestra.bat](../Start-Roamchestra.bat) 后，脚本会启动后端并检查健康状态，然后打开 Godot。
+Windows 先用 Python 3.11 的 `.venv` 或 Conda 环境安装依赖，再按 [M6 启动说明](M6.md#5-启动和验收)配置本机 Python 和 Godot 路径。双击 [Start-PixelTJCS.bat](../Start-PixelTJCS.bat) 后，脚本会启动后端并检查健康状态，然后打开 Godot。
 
 ```bash
 # 1) 环境: Python 3.11（3.10+ 均可）
-cd Roamchestra
+cd PixelTJCS
 pip install -r requirements.txt
 
 # 2) 配置 key: 把 .env.example 复制为 .env，填 LLM_API_KEY
@@ -65,7 +65,7 @@ uvicorn backend.api:app --reload --port 8000
 ## 4. 目录结构
 
 ```
-Roamchestra/
+PixelTJCS/
 ├── .env                  # 密钥（已 gitignore，绝不入库）
 ├── .env.example          # 配置模板
 ├── requirements.txt      # 依赖（5 个包，见 §11.5）
@@ -73,7 +73,7 @@ Roamchestra/
 │   ├── chen_juan.json    #   陈卷  博四卷王
 │   ├── lin_momo.json     #   林摸摸 硕三摸鱼
 │   ├── su_xiaoxin.json   #   苏小新 研一萌新
-│   ├── zhou_chong.json   #   周冲  研二竞赛
+│   ├── zichao_xiong.json #   自嘲熊  研一学生
 │   ├── he_kuaixun.json   #   何快讯 研二情报通
 │   ├── wu_li.json        #   吴鲤  研三考公
 │   ├── fang_zhe.json     #   方哲  博二哲学青年
@@ -261,7 +261,7 @@ NPC 收到目标后，先走到可达的楼梯落脚点，在另一层的对应�
 | **快进 1 小时／4 小时／3 天**（右上角） | 连续加速指定游戏时长，完成后恢复原倍率并触发维护。定时快进需连接后端。 |
 | **暂停和倍速选择**（右上角） | 原速为现实 1 秒对应游戏 10 分钟，时钟、移动与动画支持 ×1／×2／×4／×6。暂停时冻结游戏时钟和 NPC 对话进度。 |
 
-离线可跟随周冲从三楼东侧机房前往四楼学术讲座教室。打开区域调试后，可以看到角色先走到楼梯，到四楼后再走向教室。也可以观察智信馆二楼图书分馆的到达效果。
+离线可跟随自嘲熊从三楼东侧机房前往四楼学术讲座教室。打开区域调试后，可以看到角色先走到楼梯，到四楼后再走向教室。也可以观察智信馆二楼图书分馆的到达效果。
 
 ### 7.4 用 Godot 验证 NPC 寻路
 
@@ -272,7 +272,7 @@ NPC 收到目标后，先走到可达的楼梯落脚点，在另一层的对应�
 & $env:GODOT_EXE --headless --fixed-fps 60 --path frontend --script (Resolve-Path scripts/check_campus_navigation.gd).Path
 ```
 
-脚本检查 40 个房间落点的连通性，再运行主场景，让周冲走到四楼讲座教室、智信馆图书分馆，最后回到三楼东侧机房。每一站都核对实际位置、换层顺序和到达信号，全部通过时输出 `PASS`。
+脚本检查 40 个房间落点的连通性，再运行主场景，让自嘲熊走到四楼讲座教室、智信馆图书分馆，最后回到三楼东侧机房。每一站都核对实际位置、换层顺序和到达信号，全部通过时输出 `PASS`。
 
 ### 7.5 Godot 常见问题（另见 §13 排查表）
 | 症状 | 处理 |
@@ -410,7 +410,7 @@ fastapi/uvicorn（接口）、openai（SDK）、pydantic（校验）、python-do
    `forget_threshold`（越大越容易忘）、`capacity`（越小淘汰越狠）
 5. **M3 调度器（已实现）**: 继续维护 scheduler.py，循环: `world.co_located_pairs()` →
    按"日程/目标/关系"挑一对 → 调 `service.run_conversation` → `advance_time`
-6. **联调寻路**：调用 `POST /world/goto` 指派实际目的地。例如 `{"npc":"周冲","map_id":"jishilou_floor4","room_id":"R05"}` 会让他前往四楼学术讲座教室。查看 `GET /world` 可分别核对当前位置和目的地。
+6. **联调寻路**：调用 `POST /world/goto` 指派实际目的地。例如 `{"npc":"自嘲熊","map_id":"jishilou_floor4","room_id":"R05"}` 会让他前往四楼学术讲座教室。查看 `GET /world` 可分别核对当前位置和目的地。
 
 8. **前端地图/动画再生成**: 见 §6.2 和地图交接；改完用 §7.4 的命令行冒烟测试回归
 
@@ -441,5 +441,5 @@ fastapi/uvicorn（接口）、openai（SDK）、pydantic（校验）、python-do
 - HTTP维持薄路由：连续快进和状态切换放在 `SocialService`，调度循环放在 `Scheduler`；保持现有组件依赖方向。
 - `busy` 只表示实际任务处理，气泡计时不参与角色占用；长台词采用原版分段与即时替换，完整内容仍可在日志查看。
 - `game_data.gd` 统一提供楼梯入口和目的地。试走中智信馆二楼西端楼梯可返回济事楼三楼；三楼西楼梯可选择上四楼或跨馆，东西楼梯原有功能保留。
-- 后端回归为 `python -X utf8 -B -m unittest discover -s tests -p test_social.py -v`。前端专项脚本为 `tests/check_social_ui.gd`、`tests/check_time_flow.gd`、`tests/check_trial_transitions.gd`；实际WebSocket验证为 `tests/run_websocket_smoke.py`。校园路线沿用§7.4，并可通过 `ROAM_TEST_SPEED=6` 验证定时快进倍率。
+- 后端回归为 `python -X utf8 -B -m unittest discover -s tests -p test_social.py -v`。前端专项脚本为 `tests/check_social_ui.gd`、`tests/check_time_flow.gd`、`tests/check_trial_transitions.gd`；实际WebSocket验证为 `tests/run_websocket_smoke.py`。校园路线沿用§7.4，并可通过 `PIXELTJCS_TEST_SPEED=6` 验证定时快进倍率。
 - 本轮使用独立开发分支，提交明确列出的源码、测试和文档；密钥、运行数据库、日志、Godot缓存及个人工具不入库，不自动推送共享分支。

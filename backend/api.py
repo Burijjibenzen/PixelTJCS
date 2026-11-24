@@ -1,7 +1,7 @@
 """FastAPI 接口层 —— 供 Godot 前端 / 演示脚本调用的 HTTP API
 
 启动:
-    cd Roamchestra
+    cd PixelTJCS
     uvicorn backend.api:app --reload --port 8000
 
 交互式文档（自动生成）:
@@ -12,11 +12,12 @@ import asyncio
 from threading import Lock
 from typing import Literal, Optional
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from backend import PROJECT_NAME, __version__
 from backend.logger import get_logger
 # M3: HTTP 使用独立社交服务；原 GameService 保留给命令行演示。
 from backend.social import SocialService as GameService, install
@@ -43,7 +44,7 @@ def get_service() -> GameService:
     return _service
 
 
-app = FastAPI(title="Roamchestra 校园多智能体交互系统", version="0.1.0")
+app = FastAPI(title=f"{PROJECT_NAME} 校园多智能体交互系统", version=__version__)
 # 允许 Godot/浏览器跨域调试
 app.add_middleware(
     CORSMiddleware, allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
@@ -53,7 +54,8 @@ app.add_middleware(
 @app.middleware("http")
 async def guard_world_reset(request,call_next):
     global _active_requests
-    if request.url.path=="/world/reset":
+    route_path = request.scope["path"].removeprefix(request.scope.get("root_path", ""))
+    if route_path=="/world/reset":
         return await call_next(request)
     if _resetting:
         return JSONResponse({'detail':'世界正在重置'},status_code=503)
@@ -98,6 +100,11 @@ class ReportReq(BaseModel):
     x: Optional[float] = Field(default=None,ge=-1000000,le=1000000,allow_inf_nan=False)
     y: Optional[float] = Field(default=None,ge=-1000000,le=1000000,allow_inf_nan=False)
     world_id: Optional[str] = None
+
+
+class ObserverDriverReq(BaseModel):
+    token: str = Field(pattern=r'^[0-9a-f]{32}$')
+    roster: Optional[set[str]] = Field(default=None, max_length=100)
 
 
 class ResetReq(BaseModel):
@@ -179,7 +186,7 @@ class PublicNPCProfile(BaseModel):
 # ----------------------------------------------------------------------
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "roamchestra", "version": "0.1.0"}
+    return {"status": "ok", "service": PROJECT_NAME, "version": __version__}
 
 
 @app.get("/world")
@@ -300,18 +307,31 @@ def goto(req: GotoReq):
     return {"ok": True, "npc": req.npc, "area": area}
 
 
+@app.post("/world/observer-driver")
+def claim_observer_driver(req: ObserverDriverReq, request: Request):
+    service = get_service()
+    # An older open tab can only report coordinates for the characters it loaded.
+    if request.scope.get('pixeltjcs.web') and req.roster != service.npcs.keys():
+        return {"assigned": False, "detail": "角色名单已更新，请刷新页面"}
+    return {"assigned": service.claim_observer_driver(req.token)}
+
+
 @app.post("/world/report")
-def report_arrival(req: ReportReq):
+def report_arrival(req: ReportReq, request: Request):
     """前端到达上报（M2.2）：只更新世界事实中的位置 + 日志。
 
     ⚠️ 决策（已确认）：不写记忆——防 10 人移动噪音；
     "同处一室"观察记忆由 M2.3 相遇/视野事件写入。
     """
     s=get_service()
-    if req.world_id is not None and req.world_id!=s.world_id:
-        raise HTTPException(409,'忽略来自旧世界的位置上报')
-    ok, msg = s.report_arrival(req.npc, req.grid, req.map_id, req.room_id, req.arrived,
-                               req.activity_id, req.x, req.y, req.encounter_wait, req.cast_version)
+    with s.lock:
+        if request.scope.get('pixeltjcs.web') and not s.can_report_web_positions(
+                request.headers.get('X-Player-Session'), request.headers.get('X-Observer-Driver')):
+            raise HTTPException(403, '当前页面没有 NPC 位置上报权')
+        if req.world_id is not None and req.world_id!=s.world_id:
+            raise HTTPException(409,'忽略来自旧世界的位置上报')
+        ok, msg = s.report_arrival(req.npc, req.grid, req.map_id, req.room_id, req.arrived,
+                                   req.activity_id, req.x, req.y, req.encounter_wait, req.cast_version)
     if not ok:
         raise HTTPException(400, msg)
     return {"ok": True, "npc": req.npc, "grid": req.grid, "map_id": req.map_id,
@@ -331,12 +351,13 @@ def player_action(action):
 
 @app.get('/player')
 def player_state(x_player_session: Optional[str] = Header(default=None)):
-    return get_service().player.state(x_player_session)
+    return get_service().player.state(x_player_session, heartbeat=True)
 
 
 @app.post('/player/join')
-def player_join(req: PlayerJoinReq):
-    return player_action(lambda: get_service().player.join(req.name, req.session_id, req.player_token))
+def player_join(req: PlayerJoinReq, request: Request):
+    return player_action(lambda: get_service().player.join(
+        req.name, req.session_id, req.player_token, exclusive=request.scope.get('pixeltjcs.web', False)))
 
 
 @app.post('/player/leave')

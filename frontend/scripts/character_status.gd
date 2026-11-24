@@ -2,6 +2,7 @@ extends Control
 signal preview_changed(actor: Node2D)
 signal character_selected(actor: Node2D)
 signal stage_requested(npc_name: String, on_stage: bool)
+signal map_inset_changed
 
 const OUTLINE_WIDTH := preload("res://scripts/interaction_marks.gd").OUTLINE_WIDTH
 const ACTIVITY_LABELS := {
@@ -55,6 +56,7 @@ class ExpandHandle extends Button:
 
 var _actors: Array[NPC]
 var _player: PlayerAvatar
+var _observed_player: PlayerAvatar
 var _player_ui: CanvasLayer
 var _notice_ui: CanvasLayer
 var _panel: Control
@@ -67,9 +69,10 @@ var _panel_hovered := false
 var _refresh_in := 0.0
 var _stage_selection := false
 
-func setup(actors: Array[NPC], player: PlayerAvatar, player_ui: CanvasLayer, notice_ui: CanvasLayer) -> void:
+func setup(actors: Array[NPC], player: PlayerAvatar, player_ui: CanvasLayer, notice_ui: CanvasLayer, observed_player: PlayerAvatar = null) -> void:
 	_actors = actors
 	_player = player
+	_observed_player = observed_player
 	_player_ui = player_ui
 	_notice_ui = notice_ui
 
@@ -141,7 +144,13 @@ func _ready() -> void:
 	add_child(_handle)
 	get_viewport().size_changed.connect(queue_redraw)
 	get_viewport().size_changed.connect(_handle.queue_redraw)
+	item_rect_changed.connect(func(): map_inset_changed.emit())
 	_refresh_rows()
+
+func map_left_inset() -> float:
+	if not _panel.visible:
+		return _handle.size.x
+	return get_rect().end.x if position.x <= 16.0 else 0.0
 
 func _label(value: String, font_size: int, color: Color) -> Label:
 	var label := Label.new()
@@ -229,6 +238,7 @@ func _set_expanded(expanded: bool) -> void:
 		_panel_hovered = false
 	_handle.position.x = -position.x
 	queue_redraw()
+	map_inset_changed.emit()
 
 func set_stage_selection(enabled: bool) -> void:
 	_stage_selection = enabled
@@ -270,17 +280,20 @@ func _process(delta: float) -> void:
 		and not hovered.offstage and not _stage_selection else null)
 
 func _refresh_rows() -> void:
-	_player_row.visible = _player.visible
+	var shown_player := _player if _player.visible else _observed_player
+	_player_row.visible = shown_player != null and shown_player.visible
+	if _player_row.visible:
+		_player_row.actor = shown_player
+		_player_row.name_label.text = _player_ui.display_name()
+		_player_row.status_label.text = _player_status() if shown_player == _player else (
+			"行走中" if Time.get_ticks_msec() - shown_player.last_walk_msec < 1200 else "待机中")
 	var world_npcs: Dictionary = ApiClient.last_world.get("npcs", {}) if ApiClient.backend_online else {}
 	for row in _rows:
 		if not row.visible:
 			continue
 		var actor: Node2D = row.actor
 		row.location_label.text = Game.status_location_at(actor.global_position, actor.map_id)
-		if actor == _player:
-			row.name_label.text = _player_ui.profile_name
-			row.status_label.text = _player_status()
-		else:
+		if row != _player_row:
 			var npc := actor as NPC
 			var offstage := not npc.on_stage
 			if row.offstage != offstage:
@@ -316,7 +329,7 @@ func _npc_status(npc: NPC, info: Dictionary) -> String:
 		if state == "waiting":
 			return "等待阅读中"
 	if source == "player" or _player_ui.conversation_npc == npc.npc_name:
-		var player_name: String = _player_ui.profile_name if _player_ui.conversation_npc == npc.npc_name else "玩家"
+		var player_name: String = _player_ui.display_name() if ApiClient.web_mode or _player_ui.conversation_npc == npc.npc_name else "玩家"
 		return "与%s交谈" % player_name
 	var seeker: String = info.get("encounter_wait_for", "")
 	if not seeker.is_empty():
@@ -337,6 +350,8 @@ func _npc_status(npc: NPC, info: Dictionary) -> String:
 		return "前往%s" % destination
 	if state == "active":
 		return ACTIVITY_LABELS.get(activity.get("kind", ""), str(activity.get("title", "活动")) + "中")
+	if not ApiClient.can_drive_npcs() and npc.velocity.length_squared() > 64.0:
+		return "行走中"
 	if event.get("kind") == "idle":
 		return "等待中"
 	return "闲逛中" if npc.state == NPC.S.WANDER else "待机中"

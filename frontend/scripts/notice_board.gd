@@ -165,15 +165,9 @@ func _ready() -> void:
 	world_controls.add_child(stage_status)
 	reset_button = Button.new()
 	reset_button.text = "重置世界"
-	reset_button.pressed.connect(func(): reset_confirm.popup_centered())
+	reset_button.pressed.connect(_open_reset_confirmation)
 	world_controls.add_child(reset_button)
-	reset_confirm = ConfirmationDialog.new()
-	reset_confirm.theme = panel.theme
-	reset_confirm.title = "重置世界"
-	reset_confirm.dialog_text = "清空事件、记忆、公告、关系变化、临时行程和玩家存档。人物回到初始位置，时钟回到第 1 天 08:00。此操作不可撤销。"
-	reset_confirm.ok_button_text = "确认重置"
-	reset_confirm.confirmed.connect(_reset_world)
-	add_child(reset_confirm)
+	_setup_reset_confirmation(panel.theme)
 	delete_confirm = ConfirmationDialog.new()
 	delete_confirm.theme = panel.theme
 	delete_confirm.title = "删除公告"
@@ -192,6 +186,66 @@ func _ready() -> void:
 		if not visible:
 			_set_stage_selection(false))
 	hide()
+
+func _setup_reset_confirmation(base_theme: Theme) -> void:
+	var dialog_theme := base_theme.duplicate() as Theme
+	var frame := StyleBoxFlat.new()
+	frame.bg_color = Color("#3f5540")
+	frame.set_expand_margin(SIDE_TOP, 42)
+	frame.set_corner_radius_all(9)
+	frame.shadow_color = Color(0.1, 0.075, 0.05, 0.45)
+	frame.shadow_size = 12
+	frame.shadow_offset = Vector2(0, 5)
+	dialog_theme.set_stylebox("embedded_border", "Window", frame)
+	dialog_theme.set_stylebox("embedded_unfocused_border", "Window", frame)
+	dialog_theme.set_color("title_color", "Window", Color("#fff6df"))
+	dialog_theme.set_font_size("title_font_size", "Window", 22)
+	dialog_theme.set_constant("title_height", "Window", 42)
+	dialog_theme.set_constant("close_h_offset", "Window", 18)
+	dialog_theme.set_constant("close_v_offset", "Window", 24)
+	dialog_theme.set_constant("buttons_separation", "AcceptDialog", 12)
+
+	var paper := StyleBoxFlat.new()
+	paper.bg_color = Color("#fff6e4")
+	paper.set_content_margin_all(24)
+	paper.corner_radius_bottom_left = 9
+	paper.corner_radius_bottom_right = 9
+	dialog_theme.set_stylebox("panel", "AcceptDialog", paper)
+
+	reset_confirm = ConfirmationDialog.new()
+	reset_confirm.theme = dialog_theme
+	reset_confirm.title = "重置世界"
+	reset_confirm.dialog_autowrap = true
+	reset_confirm.dialog_text = "时钟回到第 1 天 08:00，所有角色回到初始位置。\n\n将清空玩家存档、记忆、事件、公告、关系变化和临时行程。\n\n重置后无法恢复。"
+	reset_confirm.ok_button_text = "确认重置"
+	reset_confirm.cancel_button_text = "取消"
+	reset_confirm.unresizable = true
+	reset_confirm.confirmed.connect(_reset_world)
+	add_child(reset_confirm)
+
+	var details := reset_confirm.get_label()
+	details.add_theme_font_size_override("font_size", 19)
+	details.add_theme_color_override("font_color", Color("#35291f"))
+	details.add_theme_constant_override("line_spacing", 6)
+	var cancel := reset_confirm.get_cancel_button()
+	var confirm := reset_confirm.get_ok_button()
+	for button: Button in [cancel, confirm]:
+		button.custom_minimum_size = Vector2(110, 44)
+		button.add_theme_font_size_override("font_size", 18)
+	for state: String in ["normal", "hover", "pressed"]:
+		var danger := confirm.get_theme_stylebox(state).duplicate() as StyleBoxFlat
+		danger.bg_color = {"normal": Color("#963f36"), "hover": Color("#81332b"), "pressed": Color("#6e2a24")}[state]
+		danger.border_color = Color("#763029")
+		danger.set_corner_radius_all(5)
+		confirm.add_theme_stylebox_override(state, danger)
+	for item: String in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color"]:
+		confirm.add_theme_color_override(item, Color("#fff8ed"))
+
+func _open_reset_confirmation() -> void:
+	var width := mini(540, int(get_viewport().get_visible_rect().size.x) - 48)
+	reset_confirm.min_size = Vector2i(maxi(1, width), 0)
+	reset_confirm.popup_centered(Vector2i(reset_confirm.min_size.x, 280))
+	reset_confirm.get_cancel_button().grab_focus.call_deferred()
 
 func _label(text: String, font_size: int) -> Label:
 	var label := Label.new()
@@ -274,7 +328,7 @@ func set_actor_stage(npc_name: String, on_stage: bool) -> void:
 	stage_appearance = on_stage
 	stage_status.text = "正在更新%s…" % npc_name
 	var payload := JSON.stringify({"npc": npc_name, "on_stage": on_stage, "world_id": world})
-	if stage_http.request(backend_url + "/world/cast", ["Content-Type: application/json"], HTTPClient.METHOD_POST, payload) != OK:
+	if stage_http.request(backend_url + "/world/cast", ApiClient.world_headers(), HTTPClient.METHOD_POST, payload) != OK:
 		stage_pending = false
 		stage_status.text = "角色状态请求发送失败，请重试"
 	_update_buttons()
@@ -324,7 +378,7 @@ func _request(kind: String, payload := {}) -> void:
 	var method := HTTPClient.METHOD_GET if kind in ["load", "history"] else HTTPClient.METHOD_POST
 	if kind == "delete":
 		method = HTTPClient.METHOD_DELETE
-	if http.request(backend_url + path, ["Content-Type: application/json"], method, JSON.stringify(payload) if method == HTTPClient.METHOD_POST else "") != OK:
+	if http.request(backend_url + path, ApiClient.world_headers(), method, JSON.stringify(payload) if method == HTTPClient.METHOD_POST else "") != OK:
 		pending = false
 		status.text = "请求未能发送，请检查后端连接。"
 		_update_buttons()

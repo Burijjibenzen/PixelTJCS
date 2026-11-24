@@ -109,6 +109,9 @@ class Scheduler:
     def meetings(self,now,elapsed):
         s=self.s;claimed=set()
         for m in s.active_meetings():
+            if any(s.player.holds(name) for name in (m['a'], m['b'])):
+                m.update(state='waiting', detail='等待玩家交谈结束后继续')
+                continue
             if m['state'] not in ('talking','deciding') and not s.planner.meeting_eligible(m):
                 self._wait_meeting(m,elapsed,'等待更优先的活动完成');continue
             pair={m['a'],m['b']};conflict=bool(pair&claimed);claimed.update(pair)

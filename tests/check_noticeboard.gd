@@ -74,7 +74,7 @@ func verify() -> void:
 	main.social_ui.panel.hide()
 	for actor in main.npcs:
 		actor.set_physics_process(false)
-	var subject = main.npcs.filter(func(actor): return actor.npc_name == "陈卷").front()
+	var subject = main.npcs.filter(func(actor): return actor.npc_name == "噜噜").front()
 	var panel = main.notice_ui
 	panel.set_process(false)
 	panel.backend_url = backend

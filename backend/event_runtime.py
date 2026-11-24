@@ -28,6 +28,12 @@ class EventRuntime:
                 UNION ALL SELECT MAX(started_at) FROM npc_event_spans)''').fetchone()[0]
             if last is not None:
                 service.world.clock.minutes = max(service.world.clock.now,last)
+            # Close the live focus of any character removed since the save was made.
+            removed = [(name,) for name, in db.execute('SELECT actor FROM npc_event_focus')
+                       if name not in service.npcs]
+            db.executemany('DELETE FROM npc_event_focus WHERE actor=?', removed)
+            db.executemany('UPDATE npc_event_spans SET ended_at=? WHERE actor=? AND ended_at IS NULL',
+                           [(service.world.clock.now, name) for name, in removed])
             for name in service.npcs:
                 identity,_ = self.store.focus(db,name)
                 if identity is None:

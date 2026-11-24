@@ -28,11 +28,13 @@ func run_checks() -> void:
 	var api := root.get_node("ApiClient")
 	api.backend_online = false
 	api.simulation_paused = false
-	var test_speed := OS.get_environment("ROAM_TEST_SPEED")
+	var test_speed := OS.get_environment("PIXELTJCS_TEST_SPEED")
+	if test_speed.is_empty():
+		test_speed = OS.get_environment("ROAM_TEST_SPEED")
 	api.simulation_speed = api.BASE_SPEED * (1.0 if test_speed.is_empty() else float(test_speed))
 	for actor in main.npcs:
 		actor.set_physics_process(false)
-	subject = main.npcs.filter(func(actor): return actor.npc_id == "zhou_chong").front()
+	subject = main.npcs.filter(func(actor): return actor.npc_id == "zichao_xiong").front()
 	companion = main.npcs.front()
 	subject.set_physics_process(true)
 	subject.arrived.connect(func(_actor): arrived = true)
@@ -51,7 +53,7 @@ func run_checks() -> void:
 				quit(1)
 				return
 	if subject.map_id != j3:
-		push_error("回归场景需要周冲从济事楼三楼出发")
+		push_error("回归场景需要自嘲熊从济事楼三楼出发")
 		quit(1)
 		return
 	lecture_layer = main.get_node("Maps/jishilou_floor4/door")
@@ -93,11 +95,11 @@ func walk_to(map_id: String, room_id: String, expected_floors: Array, check_lect
 					if not open_before_entry.has(foot):
 						push_error("到达门洞前一格时，门扇尚未打开")
 						return false
-					# 第二名角色停在同一门洞；周冲先通过，门应继续保持打开。
+					# 第二名角色停在同一门洞，自嘲熊先通过后门应继续保持打开。
 					companion.map_id = map_id
 					companion.global_position = subject.global_position
 				if not door_matches(lecture_layer, true):
-					push_error("周冲穿过四楼讲座教室门洞时，门扇仍有可见图块")
+					push_error("自嘲熊穿过四楼讲座教室门洞时，门扇仍有可见图块")
 					return false
 			elif crossed_door.is_empty():
 				for direction: Vector2i in [Vector2i.UP, Vector2i.DOWN, Vector2i.LEFT, Vector2i.RIGHT]:
@@ -127,7 +129,7 @@ func door_matches(layer: TileMapLayer, opened: bool, tiles := crossed_door) -> b
 
 func verify_doors(map_id: String) -> bool:
 	if not door_matches(lecture_layer, true):
-		push_error("未观察到周冲进门，或同伴仍在门洞时自动关门")
+		push_error("未观察到自嘲熊进门，或同伴仍在门洞时自动关门")
 		return false
 	var browser = main.get_node("MapBrowser")
 	browser.open()

@@ -1,4 +1,4 @@
-"""Roamchestra —— 校园多智能体交互系统后端包
+"""PixelTJCS —— 校园多智能体交互系统后端包
 
 模块导览（依赖方向自上而下，禁止反向依赖）:
     config   全局配置
@@ -14,3 +14,4 @@
 """
 
 __version__ = "0.1.0"
+PROJECT_NAME = "PixelTJCS"

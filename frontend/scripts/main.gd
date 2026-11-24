@@ -3,8 +3,10 @@ extends Node2D
 const NPC_SCENE := preload("res://scenes/npc.tscn")
 const ROSTER_PATH := "res://data/npc_roster.json"
 const MapDoors := preload("res://scripts/map_doors.gd")
+const MapEdgeShadow := preload("res://scripts/map_edge_shadow.gd")
 const CHAT_RADIUS := 96.0
-const BOARD_RADIUS := 384.0
+const BOARD_RADIUS := 48.0
+const STAIR_REACH_TILES := 1
 const MAP_DRAG_THRESHOLD := 5.0
 
 var _map_press := false
@@ -22,9 +24,13 @@ var social_ui
 var notice_ui
 var player_ui
 var player_avatar: PlayerAvatar
+var observed_player: PlayerAvatar
 var interaction_marks := preload("res://scripts/interaction_marks.gd").new()
 var character_status := preload("res://scripts/character_status.gd").new()
 var _view_before_preview := {}
+var _view_before_dialogue := {}
+var _dialogue_actor: NPC
+var _mode_bar: FlowContainer
 
 @onready var camera := $Cam
 @onready var floor_picker: OptionButton = $UI/FloorPicker
@@ -34,6 +40,10 @@ func _ready() -> void:
 		var floor_node := $Maps.get_node(map_id) as Node2D
 		floor_node.position = Game.map_offset(map_id)
 		Game.bind_room_layers(floor_node, map_id)
+		if ApiClient.web_mode:
+			var shadow := MapEdgeShadow.new()
+			shadow.setup(floor_node, Game.floor_data[map_id])
+			floor_node.add_child(shadow)
 		floor_doors[map_id] = MapDoors.new(floor_node.get_node("door"), Game.floor_data[map_id].doors)
 		floor_picker.add_item(Game.map_name(map_id))
 	floor_picker.item_selected.connect(_select_floor)
@@ -43,8 +53,8 @@ func _ready() -> void:
 		var home_map: String = entry.get("home_map", Game.FLOOR3)
 		$Actors.add_child(npc)
 		npc.global_position = Game.nav_world_of(entry.home, home_map)
-		npc.setup(entry.id, entry.name, int(entry.char), entry.home,
-			Color(entry.tint[0], entry.tint[1], entry.tint[2]), home_map)
+		npc.setup(entry.id, entry.name, int(entry.get("char", 1)), entry.home,
+			Color(entry.tint[0], entry.tint[1], entry.tint[2]), home_map, entry.get("sprite_sheet", ""))
 		npc.arrived.connect(_on_npc_arrived)
 		npc.floor_changed.connect(_on_floor_changed)
 		npcs.append(npc)
@@ -71,13 +81,20 @@ func _ready() -> void:
 	$Actors.add_child(player_avatar)
 	player_avatar.global_position = Game.nav_world_of("R01", Game.FLOOR3)
 	player_avatar.visible = false
+	if ApiClient.web_mode:
+		observed_player = PlayerAvatar.new()
+		observed_player.label_text = player_ui.display_name()
+		observed_player.hide()
+		$Actors.add_child(observed_player)
 	player_ui.player_avatar = player_avatar
 	player_ui.near_checker = Callable(self, "_near_npc")
+	player_ui.dialogue_changed.connect(_on_dialogue_changed)
+	player_ui.dialogue_layout_changed.connect(_update_map_area)
 	interaction_marks.populate = _populate_interaction_marks
 	interaction_marks.z_index = -1
 	$UI.add_child(interaction_marks)
 	character_status.name = "CharacterStatus"
-	character_status.setup(npcs, player_avatar, player_ui, notice_ui)
+	character_status.setup(npcs, player_avatar, player_ui, notice_ui, observed_player)
 	character_status.preview_changed.connect(_preview_character)
 	character_status.character_selected.connect(_select_character)
 	character_status.stage_requested.connect(notice_ui.set_actor_stage)
@@ -102,6 +119,9 @@ func _ready() -> void:
 		var boards: Array = Game.floor_data[current_map].get("noticeboards", [])
 		notice_ui.open_board("" if boards.is_empty() else str(boards[0].id), true))
 	_layout_controls(mechanics)
+	character_status.map_inset_changed.connect(_update_map_area)
+	get_viewport().size_changed.connect(_update_map_area)
+	_update_map_area()
 	ApiClient.control_error.connect(func(message): $UI/InfoLabel.text = message)
 	for rate in ApiClient.SPEED_OPTIONS:
 		$UI/SpeedPicker.add_item("正常 ×1" if rate == ApiClient.BASE_SPEED else "快进 ×%.0f" % (rate / ApiClient.BASE_SPEED))
@@ -111,10 +131,14 @@ func _ready() -> void:
 	_on_online_changed(ApiClient.backend_online)
 
 func _layout_controls(mechanics) -> void:
-	var bar := HBoxContainer.new()
+	var bar := HFlowContainer.new()
+	_mode_bar = bar
 	bar.name = "ModeBar"
-	bar.position = Vector2(12, 42)
-	bar.add_theme_constant_override("separation", 8)
+	bar.anchor_right = 1.0
+	bar.offset_left = 12
+	bar.offset_right = -540
+	bar.offset_top = 42
+	bar.add_theme_constant_override("h_separation", 8)
 	var tea: Theme = preload("res://assets/tea_theme.tres")
 	bar.theme = tea
 	$UI.add_child(bar)
@@ -122,6 +146,18 @@ func _layout_controls(mechanics) -> void:
 		button.reparent(bar, false)
 		button.set_anchors_preset(Control.PRESET_TOP_LEFT)
 		button.custom_minimum_size.y = 36
+	var fit_button := Button.new()
+	fit_button.text = "全图"
+	fit_button.tooltip_text = "显示当前楼层并留出工具栏与侧栏空间"
+	fit_button.focus_mode = Control.FOCUS_NONE
+	fit_button.custom_minimum_size.y = 36
+	fit_button.pressed.connect(func():
+		if is_instance_valid(_dialogue_actor):
+			player_ui._close_panel()
+		cancel_follow()
+		camera.fit_floor())
+	bar.add_child(fit_button)
+	bar.resized.connect(_update_map_area)
 	for item: Control in [$UI/BtnAdv1h, $UI/BtnAdv4h, $UI/BtnAdv3d, $UI/SpeedPicker, $UI/BtnPause, $UI/ClockLabel, $UI/InfoLabel, $UI/HintLabel]:
 		item.theme = tea
 	var windows := [social_ui.panel, notice_ui, player_ui.window, mechanics.window, $MapBrowser]
@@ -142,36 +178,49 @@ func _layout_controls(mechanics) -> void:
 					other.hide()
 		)
 
+func _update_map_area() -> void:
+	var viewport := get_viewport_rect()
+	var toolbar_bottom := maxf(78.0, _mode_bar.get_rect().end.y if _mode_bar else 0.0)
+	var left: float = character_status.map_left_inset() if character_status.is_node_ready() else 0.0
+	var origin := viewport.position + Vector2(left + 24.0, toolbar_bottom + 32.0)
+	var end := viewport.end - Vector2(24.0, 68.0)
+	if is_instance_valid(_dialogue_actor):
+		player_ui.layout_dialogue(left, origin.y + 180.0)
+		end.y = player_ui.window.position.y - 24.0
+	camera.set_map_area(Rect2(origin, (end - origin).max(Vector2.ONE)))
+	if is_instance_valid(_dialogue_actor):
+		camera.frame_dialogue(player_avatar.global_position, _dialogue_actor.global_position)
+
 func _physics_process(_delta: float) -> void:
+	var visible_player := player_avatar if player_avatar.visible else observed_player
 	for map_id: String in floor_doors:
-		var player_cell := Game.cell_of(player_avatar.global_position, map_id) if player_avatar.visible and player_avatar.map_id == map_id else Vector2i(-1, -1)
+		var player_cell := Vector2i(-1, -1)
+		if visible_player and visible_player.visible and visible_player.map_id == map_id:
+			player_cell = Game.cell_of(visible_player.global_position, map_id)
 		floor_doors[map_id].update_for_npcs(npcs, map_id, player_cell)
-	if _can_control_player() and player_avatar.walk(_delta):
-		var player_floor := player_avatar.map_id
-		var cell := Game.cell_of(player_avatar.global_position, player_floor)
-		var destination: Dictionary = Game.floor_data[player_floor].walk_stairs.get(cell, {})
-		if not destination.is_empty():
-			player_avatar.map_id = destination.map_id
-			player_avatar.global_position = Game.world_of(destination.cell, destination.map_id)
-			if _view_before_preview.is_empty() or camera.target == player_avatar:
-				_show_floor(destination.map_id, player_avatar.global_position)
-			if _view_before_preview.is_empty():
-				$UI/InfoLabel.text = "你已到达" + Game.map_name(destination.map_id)
-		if _view_before_preview.is_empty() and not _map_dragging:
-			camera.set_target(player_avatar)
+	if _can_control_player() and player_avatar.walk(_delta) and _view_before_preview.is_empty() and not _map_dragging:
+		camera.set_target(player_avatar)
 
 func _process(delta: float) -> void:
+	if is_instance_valid(_dialogue_actor):
+		camera.frame_dialogue(player_avatar.global_position, _dialogue_actor.global_position)
 	if player_avatar.visible != player_ui.active:
 		player_avatar.visible = player_ui.active
 		if player_avatar.visible:
 			_focus_player()
-			$UI/HintLabel.text = "WASD/方向键行走　按住左键拖地图　E 交互　踩箭头换层　P 回到自己"
+			$UI/HintLabel.text = "WASD/方向键行走　按住左键拖地图　E 交互 / 换层　P 回到自己"
 		else:
 			cancel_follow()
 			$UI/HintLabel.text = "点击人物：跟随/资料　1/2/3 切楼　按住左键拖地图　滚轮缩放　空格切换　Esc 取消　V 分区"
 	var mode := "后端驱动" if ApiClient.backend_online else "本地演示"
-	var rate := "×%.0f" % ApiClient.time_scale()
 	var social: Dictionary = ApiClient.last_world.get("social", {})
+	if ApiClient.web_mode:
+		var controlling := ApiClient.can_control_world()
+		mode = "玩家" if controlling else "旁观"
+		_sync_observed_player(social, controlling)
+		for control: Control in [$UI/ModeBar/GodMode, $UI/BtnAdv1h, $UI/BtnAdv4h, $UI/BtnAdv3d, $UI/SpeedPicker, $UI/BtnPause]:
+			control.visible = controlling
+	var rate := "×%.0f" % ApiClient.time_scale()
 	var stream := "对话事件流已连接" if social_ui.stream_online else "对话事件流重连中"
 	var model := "模型已配置" if social.get("model_configured", false) else "模型未配置"
 	if not ApiClient.backend_online:
@@ -181,7 +230,7 @@ func _process(delta: float) -> void:
 		time_control += " 定时快进"
 	$UI/ClockLabel.text = " · ".join([ApiClient.backend_time, mode + " " + time_control, stream, model])
 	$UI/ClockLabel.tooltip_text = social_ui.notice if Time.get_ticks_msec() / 1000.0 < social_ui.notice_until else "模型配置仅表示已填写密钥"
-	if not ApiClient.backend_online:
+	if not ApiClient.backend_online and ApiClient.can_control_world():
 		_sched_timer -= delta * ApiClient.time_scale()
 		if _sched_timer <= 0.0:
 			_sched_timer = randf_range(4.0, 7.0)
@@ -212,7 +261,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	# GUI先消费点击，面板和地图试走中的交互不会点中背后的NPC。
-	if $MapBrowser.visible or not event is InputEventMouseButton or not event.pressed or event.button_index != MOUSE_BUTTON_LEFT:
+	if is_instance_valid(_dialogue_actor) or $MapBrowser.visible or not event is InputEventMouseButton or not event.pressed or event.button_index != MOUSE_BUTTON_LEFT:
 		return
 	_map_press = true
 	_map_dragging = false
@@ -249,13 +298,10 @@ func _click_map(point: Vector2) -> void:
 		return
 	if target.has("npc"):
 		var npc: NPC = target.npc
-		follow_npc(npc)
 		if player_ui.active and _near_npc(npc.npc_name):
-			if player_ui.window.visible and player_ui.selected_npc == npc.npc_name:
-				player_ui._close_panel()
-			else:
-				player_ui.open_for(npc.npc_name)
+			player_ui.open_for(npc.npc_name)
 		else:
+			follow_npc(npc)
 			social_ui.show_profile(npc.npc_name, true)
 	else:
 		_open_notice_board(target.board.id)
@@ -273,6 +319,8 @@ func _target_at(viewport_position: Vector2) -> Dictionary:
 	var world_point := get_canvas_transform().affine_inverse() * viewport_position
 	var cell := Game.cell_of(world_point, current_map)
 	for board: Dictionary in Game.floor_data[current_map].get("noticeboards", []):
+		if player_ui.active and _player_board_distance(board) > BOARD_RADIUS:
+			continue
 		for raw: Array in board.cells:
 			if cell == Vector2i(int(raw[0]), int(raw[1])):
 				return {"board": board}
@@ -289,29 +337,22 @@ func _open_notice_board(board_id: String) -> void:
 		notice_ui.open_board(board_id)
 
 func _select_floor(index: int) -> void:
+	if is_instance_valid(_dialogue_actor):
+		player_ui._close_panel()
 	cancel_follow()
 	var map_id: String = Game.MAP_IDS[index]
-	# 切楼时先看这一层实有的角色；无人时以公共走廊为起点。
-	for npc in npcs:
-		if npc.map_id == map_id:
-			_show_floor(map_id, npc.global_position)
-			return
-	var first_room: String = str(Game.all_room_ids(map_id)[0])
-	_show_floor(map_id, Game.nav_world_of(first_room, map_id))
+	_show_floor(map_id, Game.map_offset(map_id))
+	camera.fit_floor()
 
 func _show_floor(map_id: String, focus: Vector2) -> void:
 	current_map = map_id
 	floor_picker.select(Game.MAP_IDS.find(map_id))
 	$DebugDraw.map_id = map_id
 	$DebugDraw.queue_redraw()
-	var offset := Game.map_offset(map_id)
-	var size: Vector2i = Game.floor_data[map_id].size
-	camera.limit_left = int(offset.x)
-	camera.limit_top = int(offset.y)
-	camera.limit_right = int(offset.x) + size.x * Game.tile_size
-	camera.limit_bottom = int(offset.y) + size.y * Game.tile_size
-	camera.global_position = focus
-	camera.reset_smoothing()
+	for floor in $Maps.get_children():
+		floor.visible = floor.name == map_id
+	var extent := Vector2(Game.floor_data[map_id].size) * Game.tile_size
+	camera.set_floor(Rect2(Game.map_offset(map_id), extent), focus)
 
 func cancel_follow() -> void:
 	_end_status_preview()
@@ -348,9 +389,16 @@ func _focus_player() -> void:
 	$UI/InfoLabel.text = "镜头跟随：你"
 
 func _select_character(actor: Node2D) -> void:
+	if is_instance_valid(_dialogue_actor):
+		player_ui._close_panel()
 	if actor == player_avatar:
 		_focus_player()
 		player_ui.toggle_panel()
+	elif actor == observed_player:
+		_view_before_preview.clear()
+		_show_floor(actor.map_id, actor.global_position)
+		camera.set_target(actor)
+		$UI/InfoLabel.text = "镜头跟随：" + player_ui.display_name()
 	else:
 		var npc := actor as NPC
 		if npc.on_stage:
@@ -358,25 +406,50 @@ func _select_character(actor: Node2D) -> void:
 		social_ui.show_profile(npc.npc_name, true)
 
 func _preview_character(actor: Node2D) -> void:
+	if is_instance_valid(_dialogue_actor):return
 	if actor == null:
 		_end_status_preview()
 		return
 	if _view_before_preview.is_empty():
-		_view_before_preview = {
-			"map_id": current_map, "position": camera.global_position, "zoom": camera.zoom,
-			"target": camera.target, "label": $UI/InfoLabel.text,
-			"viewing_player_floor": current_map == player_avatar.map_id,
-		}
+		_view_before_preview = _capture_view()
 	_show_floor(actor.map_id, actor.global_position)
 	camera.set_target(actor)
-	var actor_name: String = player_ui.profile_name if actor == player_avatar else actor.npc_name
+	var actor_name: String = player_ui.display_name() if actor is PlayerAvatar else actor.npc_name
 	$UI/InfoLabel.text = "镜头预览：" + actor_name
+
+func _sync_observed_player(social: Dictionary, controlling: bool) -> void:
+	var sample: Dictionary = social.get("player_position", {})
+	var floor_id: String = sample.get("map_id", "")
+	if controlling or not ApiClient.backend_online or not Game.floor_data.has(floor_id):
+		observed_player.hide()
+		if camera.target == observed_player:
+			cancel_follow()
+		return
+	var point := Game.map_offset(floor_id) + Vector2(sample.x, sample.y)
+	var changed_floor := observed_player.map_id != floor_id
+	if observed_player.visible and not changed_floor and point != observed_player.global_position:
+		observed_player.last_walk_msec = Time.get_ticks_msec()
+	observed_player.map_id = floor_id
+	observed_player.global_position = point
+	observed_player.show()
+	if changed_floor and camera.target == observed_player:
+		_show_floor(floor_id, point)
 
 func _end_status_preview() -> void:
 	if _view_before_preview.is_empty():
 		return
 	var view := _view_before_preview
 	_view_before_preview = {}
+	_restore_view(view)
+
+func _capture_view() -> Dictionary:
+	return {
+		"map_id": current_map, "position": camera.global_position, "zoom": camera.zoom,
+		"target": camera.target, "label": $UI/InfoLabel.text, "overview": camera.overview,
+		"viewing_player_floor": current_map == player_avatar.map_id,
+	}
+
+func _restore_view(view: Dictionary) -> void:
 	var target: Node2D = view.target
 	if not is_instance_valid(target) or not target.is_visible_in_tree():
 		target = null
@@ -387,8 +460,33 @@ func _end_status_preview() -> void:
 		position = target.global_position
 	camera.zoom = view.zoom
 	_show_floor(map_id, position)
+	if view.overview:
+		camera.fit_floor()
 	camera.set_target(target)
 	$UI/InfoLabel.text = view.label
+
+func _on_dialogue_changed(npc_name: String) -> void:
+	if npc_name.is_empty():
+		_dialogue_actor = null
+		camera.dialogue_framing = false
+		$UI/HintLabel.show()
+		_update_map_area()
+		if not _view_before_dialogue.is_empty():
+			_restore_view(_view_before_dialogue)
+			_view_before_dialogue.clear()
+		return
+	_end_status_preview()
+	_view_before_dialogue = _capture_view()
+	for npc: NPC in npcs:
+		if npc.npc_name != npc_name:continue
+		_dialogue_actor = npc
+		camera.dialogue_framing = true
+		camera.set_target(null)
+		_show_floor(npc.map_id, npc.global_position)
+		$UI/InfoLabel.text = "交谈：你与 " + npc_name
+		$UI/HintLabel.hide()
+		_update_map_area()
+		return
 
 func _on_floor_changed(npc: NPC) -> void:
 	if camera.target == npc:
@@ -424,30 +522,54 @@ func _nearby_target() -> Dictionary:
 	var target := {}
 	var distance := INF
 	var pos := player_avatar.global_position
-	var map_id := player_avatar.map_id
-	var room := Game.room_id_at(pos, map_id)
+	var floor_id := player_avatar.map_id
+	var player_cell := Game.cell_of(pos, floor_id)
+	var nearest_stair_steps := STAIR_REACH_TILES + 1
+	if current_map == floor_id:
+		for cell: Vector2i in Game.floor_data[floor_id].walk_stairs:
+			var offset := cell - player_cell
+			var steps := absi(offset.x) + absi(offset.y)
+			if steps < nearest_stair_steps:
+				nearest_stair_steps = steps
+				target = {"stair": cell}
+	if not target.is_empty():
+		return target
 	if ApiClient.backend_online and not ApiClient.simulation_paused:
 		for npc in npcs:
-			if npc.social_busy and player_ui.conversation_npc != npc.npc_name:
-				continue
 			if _near_npc(npc.npc_name):
 				var gap := pos.distance_to(npc.global_position)
 				if gap < distance:
 					distance = gap
 					target = {"npc": npc}
-	for board: Dictionary in Game.floor_data[map_id].noticeboards:
-		if board.room_id != room:
-			continue
-		for raw: Array in board.cells:
-			var gap := pos.distance_to(Game.world_of(Vector2i(int(raw[0]), int(raw[1])), map_id))
-			if gap <= BOARD_RADIUS and gap < distance:
-				distance = gap
-				target = {"board": board}
+	if not target.is_empty():
+		return target
+	for board: Dictionary in Game.floor_data[floor_id].noticeboards:
+		var gap := _player_board_distance(board)
+		if gap <= BOARD_RADIUS and gap < distance:
+			distance = gap
+			target = {"board": board}
 	return target
+
+func _player_board_distance(board: Dictionary) -> float:
+	var position := player_avatar.global_position
+	var map_id := player_avatar.map_id
+	if board.map_id != map_id or Game.room_id_at(position, map_id) != board.room_id:
+		return INF
+	var distance := INF
+	for raw: Array in board.cells:
+		var cell := Vector2i(int(raw[0]), int(raw[1]))
+		distance = minf(distance, position.distance_to(Game.world_of(cell, map_id)))
+	return distance
 
 func _interact_player() -> void:
 	var target := _nearby_target()
-	if target.has("npc"):
+	if target.has("stair"):
+		var destination: Dictionary = Game.floor_data[player_avatar.map_id].walk_stairs[target.stair]
+		player_avatar.map_id = destination.map_id
+		player_avatar.global_position = Game.world_of(destination.cell, destination.map_id)
+		_focus_player()
+		$UI/InfoLabel.text = "你已到达" + Game.map_name(destination.map_id)
+	elif target.has("npc"):
 		player_ui.open_for(target.npc.npc_name)
 	elif target.has("board"):
 		_open_notice_board(target.board.id)
@@ -461,10 +583,11 @@ func _populate_interaction_marks() -> void:
 	for board: Dictionary in Game.floor_data[current_map].noticeboards:
 		var point := Game.world_of(Vector2i(int(board.cell[0]), int(board.cell[1])), current_map)
 		interaction_marks.labels.append({"text": "告示栏", "point": world_to_marks * (point - Vector2(0, 28))})
+	var nearby := _nearby_target() if _can_control_player() and current_map == player_avatar.map_id else {}
 	var stairs: Dictionary = Game.floor_data[current_map].walk_stairs
 	for cell: Vector2i in stairs:
-		interaction_marks.arrows.append({"text": stairs[cell].label, "point": world_to_marks * Game.world_of(cell, current_map)})
-	var nearby := _nearby_target() if _can_control_player() and current_map == player_avatar.map_id else {}
+		interaction_marks.arrows.append({"text": stairs[cell].label, "point": world_to_marks * Game.world_of(cell, current_map),
+			"highlighted": nearby.get("stair") == cell})
 	if not nearby.is_empty():
 		interaction_marks.show_prompt(world_to_marks * (player_avatar.global_position - Vector2(0, 42)))
 		_outline_target(nearby, world_to_marks)

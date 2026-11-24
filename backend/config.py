@@ -1,19 +1,22 @@
-"""全局配置 —— Roamstra 所有可调参数的唯一入口
+"""全局配置 —— PixelTJCS 所有可调参数的唯一入口
 
 运行时优先读取项目根目录 .env 中的环境变量，未设置时使用下面的默认值。
 改参数只需要动这一个文件（或 .env），不要散落在各模块里。
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 # 项目根目录: <repo>/backend/config.py 的上一级
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 加载 .env（key、模型名等敏感/环境相关信息，不入 git）
-load_dotenv(os.path.join(BASE_DIR, ".env"))
+ENV_PATH = os.path.join(BASE_DIR, ".env")
+load_dotenv(ENV_PATH)
+HYBRID_LLM = (os.getenv("PIXELTJCS_LLM") or os.getenv("ROAMCHESTRA_LLM")) == "hybrid"
+GATEWAY_DEFAULTS = dotenv_values(ENV_PATH) if HYBRID_LLM else {}
 
 
 @dataclass
@@ -33,6 +36,11 @@ class LLMConfig:
     max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "1024"))
     temperature: float = float(os.getenv("LLM_TEMPERATURE", "0.8"))
     max_concurrent_requests: int = int(os.getenv("LLM_MAX_CONCURRENT_REQUESTS", "3"))
+    player_api_key: str = field(default=os.getenv("LLM_PLAYER_API_KEY", GATEWAY_DEFAULTS.get("LLM_API_KEY") or "")
+                                if HYBRID_LLM else "", repr=False)
+    player_api_base_url: str = os.getenv("LLM_PLAYER_API_BASE_URL", GATEWAY_DEFAULTS.get("LLM_BASE_URL") or "https://agi.tongji.edu.cn/v1")
+    player_api_model: str = os.getenv("LLM_PLAYER_API_MODEL", "GLM-5.3-Flash")
+    player_api_timeout: float = float(os.getenv("LLM_PLAYER_API_TIMEOUT", "12"))
 
 
 @dataclass
@@ -114,6 +122,7 @@ class ActivityConfig:
     min_stay_seconds: float = 12.0
     travel_timeout_seconds: float = 300.0
     pending_expiry_minutes: float = 720.0
+    pending_expiry_notice_minutes: float = 30.0
     appointment_lead_minutes: float = 180.0
     context_scan_seconds: float = 5.0
     memory_reactions_per_day: int = 1

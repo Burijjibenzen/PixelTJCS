@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 import uvicorn
 
+from backend import PROJECT_NAME
 from scripts.runtime_paths import resolve_godot
 
 
@@ -31,7 +32,7 @@ def main() -> None:
         except OSError as error:
             raise SystemExit(f"无法使用 {host}:{port}。请检查是否已有后端在运行。\n{error}") from error
 
-        print("正在启动 Roamchestra 后端…", flush=True)
+        print(f"正在启动 {PROJECT_NAME} 后端…", flush=True)
         backend = executor.submit(server.run, [listener])
         try:
             deadline = time.monotonic() + 30
@@ -45,8 +46,8 @@ def main() -> None:
 
             with httpx.Client(trust_env=False, timeout=3) as client:
                 health = client.get(f"http://{host}:{port}/health").raise_for_status().json()
-            if health.get("service") != "roamchestra" or health.get("status") != "ok":
-                raise SystemExit("Roamchestra 后端健康检查未通过。")
+            if health.get("service") != PROJECT_NAME or health.get("status") != "ok":
+                raise SystemExit(f"{PROJECT_NAME} 后端健康检查未通过。")
 
             print("后端已就绪，正在打开 Godot。关闭游戏窗口后将停止后端。", flush=True)
             subprocess.run([str(godot), "--path", str(frontend)], cwd=root, check=True)

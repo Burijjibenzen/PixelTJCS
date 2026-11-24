@@ -64,6 +64,7 @@ def load_rooms() -> Dict[Tuple[str, str], dict]:
 
 
 ROOMS = load_rooms()
+MAP_IDS = frozenset(map_id for map_id, _ in ROOMS)
 AREAS = {area["id"]: area for area in ROOMS.values()}
 for alias, (map_id, rid, _) in LEGACY_LOCATIONS.items():
     AREAS[alias] = ROOMS[map_id, rid]

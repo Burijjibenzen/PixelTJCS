@@ -105,5 +105,33 @@ func verify() -> void:
 	b._physics_process(1.0 / 60.0)
 	if not check(b.global_position.x < stopped_at.x and is_same(walking_route, b._sections),
 			"Releasing an encounter must resume the previous route"): return
-	print("PASS: retargeting, movement locks, encounter acknowledgement and route resume")
+
+	# A live whisper got stuck here after the NPC's feet drifted onto a furniture tile.
+	var floor4: String = game.FLOOR4
+	a.reset_to(floor4, "R07")
+	a.global_position = game.map_offset(floor4) + Vector2(1093.1, 686.8)
+	var blocked_position: Vector2 = a.global_position
+	if not check(game.is_blocked(game.cell_of(blocked_position, floor4), floor4), "The saved position must be blocked"): return
+	if not check(a.go_to_location(floor_id, "R03") and a.is_travelling(),
+			"A whisper should recover a route from an adjacent walkable tile"): return
+	if not check(game.room_id_at(a.global_position, floor4) == "R07"
+			and a.global_position.distance_to(blocked_position) <= game.tile_size,
+			"Recovering a route must keep the NPC in the same room"): return
+
+	api.web_mode = true
+	var first := {"position": {"map_id": floor_id, "x": 296.0, "y": 488.0}}
+	var second := {"position": {"map_id": floor_id, "x": 344.0, "y": 488.0}}
+	a.apply_spectator_position(first)
+	a._physics_process(1.0)
+	a.apply_spectator_position(second)
+	a._physics_process(0.5)
+	if not check(a.global_position.is_equal_approx(Vector2(320, 488)),
+			"An observer should still be halfway through the movement halfway between snapshots"): return
+	a.apply_spectator_position(second)
+	a._physics_process(0.5)
+	if not check(a.global_position.is_equal_approx(Vector2(344, 488)),
+			"A repeated position should not restart interpolation"): return
+	a._physics_process(0.1)
+	if not check(a.velocity == Vector2.ZERO, "An observer should stop once the latest position is reached"): return
+	print("PASS: retargeting, movement locks, route resume and smooth spectator motion")
 	quit(0)

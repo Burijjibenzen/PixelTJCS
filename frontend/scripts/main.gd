@@ -70,6 +70,7 @@ func _ready() -> void:
 	add_child(social_ui)
 	notice_ui = load("res://scripts/notice_board.gd").new()
 	notice_ui.setup(npcs)
+	notice_ui.reset_started.connect(_on_world_reset_started)
 	add_child(notice_ui)
 	$MapBrowser.notice_board = notice_ui
 	$MapBrowser.notice_board_requested.connect(_open_notice_board)
@@ -202,6 +203,8 @@ func _physics_process(_delta: float) -> void:
 		camera.set_target(player_avatar)
 
 func _process(delta: float) -> void:
+	if notice_ui.is_resetting():
+		return
 	if is_instance_valid(_dialogue_actor):
 		camera.frame_dialogue(player_avatar.global_position, _dialogue_actor.global_position)
 	if player_avatar.visible != player_ui.active:
@@ -523,11 +526,19 @@ func _near_npc(npc_name: String) -> bool:
 	return false
 
 func _can_control_player() -> bool:
+	if notice_ui.is_resetting():
+		return false
 	var focus := get_viewport().gui_get_focus_owner()
 	var viewing_player_floor: bool = _view_before_preview.get("viewing_player_floor", current_map == player_avatar.map_id)
 	return player_avatar.visible and viewing_player_floor \
 		and not $MapBrowser.visible and not player_ui.window.visible and not notice_ui.visible \
 		and not (focus is LineEdit or focus is TextEdit)
+
+func _on_world_reset_started() -> void:
+	player_avatar.movement.held.clear()
+	$MapBrowser.movement.held.clear()
+	_map_press = false
+	_map_dragging = false
 
 func _nearby_target() -> Dictionary:
 	var target := {}

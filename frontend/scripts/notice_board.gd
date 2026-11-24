@@ -1,5 +1,6 @@
 extends CanvasLayer
 signal stage_selection_changed(enabled: bool)
+signal reset_started
 ## 公告浏览/发布是观察者操作，不代替NPC实际阅读。
 var actors: Array = []
 var boards: Array = []
@@ -30,6 +31,7 @@ var whisper_edit: TextEdit
 var whisper_button: Button
 var reset_button: Button
 var reset_confirm: ConfirmationDialog
+var reset_overlay: CanvasLayer
 var god_mode := false
 var stage_button: Button
 var stage_status: Label
@@ -285,7 +287,7 @@ func open_board(key := "", admin := false) -> void:
 	refresh()
 
 func _process(delta: float) -> void:
-	if not visible:
+	if not visible or is_resetting():
 		return
 	_update_buttons()
 	if not ApiClient.backend_online:
@@ -349,6 +351,14 @@ func _reset_world() -> void:
 	if not world_id.is_empty():
 		_request("reset", {"confirm": true, "world_id": world_id})
 
+func is_resetting() -> bool:
+	return is_instance_valid(reset_overlay)
+
+func _show_reset_overlay() -> void:
+	reset_overlay = preload("res://scripts/world_reset_overlay.gd").new()
+	get_parent().add_child(reset_overlay)
+	reset_started.emit()
+
 func _request(kind: String, payload := {}) -> void:
 	if board_id.is_empty() or not ApiClient.backend_online:
 		return
@@ -382,6 +392,8 @@ func _request(kind: String, payload := {}) -> void:
 		pending = false
 		status.text = "请求未能发送，请检查后端连接。"
 		_update_buttons()
+	elif kind == "reset":
+		_show_reset_overlay()
 
 func _done(result: int, code: int, _headers: PackedStringArray, bytes: PackedByteArray) -> void:
 	var data = null if bytes.is_empty() else JSON.parse_string(bytes.get_string_from_utf8())
@@ -390,13 +402,12 @@ func _done(result: int, code: int, _headers: PackedStringArray, bytes: PackedByt
 	var completed_draft := request_draft
 	pending = false
 	_update_buttons()
+	if completed_operation == "reset":
+		_finish_reset(result, code, data)
+		return
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200 or not data is Dictionary:
 		if board_id == completed_board:
 			status.text = str(data.get("detail", "操作失败，请重试。")) if data is Dictionary else "连接失败，请检查后端。"
-	elif completed_operation == "reset":
-		ApiClient.apply_stream_world(data.world)
-		hide()
-		return
 	elif completed_operation == "whisper":
 		if god_mode:
 			status.text = "已指派 " + str(data.activity.title)
@@ -427,6 +438,22 @@ func _done(result: int, code: int, _headers: PackedStringArray, bytes: PackedByt
 		refresh_timer = 0.5
 	if board_id != completed_board:
 		refresh()
+
+func _finish_reset(result: int, code: int, data: Variant) -> void:
+	var world = data.get("world") if data is Dictionary else null
+	var social = world.get("social") if world is Dictionary else null
+	if (result == HTTPRequest.RESULT_SUCCESS and code == 200 and world is Dictionary
+			and world.get("npcs") is Dictionary and social is Dictionary and not str(social.get("world_id", "")).is_empty()):
+		var old_world := ApiClient.world_id
+		ApiClient.apply_stream_world(world)
+		hide()
+		# 场景切换时由旧场景销毁遮罩，避免重载前短暂放开输入。
+		if not old_world.is_empty() and ApiClient.world_id != old_world and get_tree().current_scene != null:
+			return
+	else:
+		status.text = str(data.get("detail", "重置失败，请重试。")) if data is Dictionary else "连接失败，请检查后端。"
+	if is_resetting():
+		reset_overlay.queue_free()
 
 func _render(notices: Array) -> void:
 	for child in cards.get_children():

@@ -188,5 +188,37 @@ func _check() -> void:
 	assert(observed.sprite.is_visible_in_tree() and observed.label.is_visible_in_tree())
 	main._sync_observed_player({"player_position": {"map_id": game.FLOOR3, "x": 100, "y": 100}}, false)
 	assert(not observed.sprite.is_visible_in_tree() and not observed.label.is_visible_in_tree())
+
+	main.notice_ui.pending = true
+	main.notice_ui.operation = "reset"
+	main.player_avatar.movement.held.append(KEY_W)
+	main.notice_ui._show_reset_overlay()
+	assert(root.is_input_disabled() and not main._can_control_player())
+	assert(main.player_avatar.movement.held.is_empty())
+	var original_floor: String = main.current_map
+	press(KEY_1, true)
+	press(KEY_1, false)
+	assert(main.current_map == original_floor)
+	var overlay = main.notice_ui.reset_overlay
+	var angle: float = overlay._angle
+	await process_frame
+	await process_frame
+	assert(overlay._angle != angle)
+	main.notice_ui._done(HTTPRequest.RESULT_SUCCESS, 500, PackedStringArray(), '{"detail":"测试重置失败"}'.to_utf8_buffer())
+	await process_frame
+	assert(not root.is_input_disabled() and not main.notice_ui.is_resetting())
+	assert(main.notice_ui.status.text == "测试重置失败")
+
+	api.world_id = "before-reset"
+	main.notice_ui.pending = true
+	main.notice_ui._show_reset_overlay()
+	api.apply_stream_world({"npcs": {}, "social": {"world_id": "after-reset"}})
+	assert(root.is_input_disabled())
+	for i in range(5):
+		await process_frame
+		if current_scene != null and current_scene != main:
+			break
+	assert(current_scene != null and current_scene != main)
+	assert(not root.is_input_disabled())
 	print("player mode smoke OK")
 	quit()

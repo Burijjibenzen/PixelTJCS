@@ -429,11 +429,15 @@ func verify() -> void:
 	if not panel.reset_confirm.visible or (panel.pending and panel.operation == "reset") or api.world_id != old_world_id:
 		fail("Reset must await user confirmation");return
 	panel.reset_confirm.get_ok_button().pressed.emit()
+	if not root.is_input_disabled() or not panel.is_resetting():
+		fail("Confirmed reset must show a loading overlay and lock the game viewport");return
 	var reset_until := Time.get_ticks_msec() + 12000
 	while (current_scene == main or current_scene == null) and Time.get_ticks_msec() < reset_until:
 		await process_frame
 	if current_scene == null or current_scene == main or api.world_id == old_world_id:
 		fail("Confirmed reset must recreate the Godot scene for the new world: " + panel.status.text);return
+	if root.is_input_disabled():
+		fail("The new world must restore viewport input");return
 	var restarted = current_scene
 	for actor in restarted.npcs:
 		var spawn: Dictionary = api.last_world.npcs[actor.npc_name]

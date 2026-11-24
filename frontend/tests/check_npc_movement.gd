@@ -133,5 +133,23 @@ func verify() -> void:
 			"A repeated position should not restart interpolation"): return
 	a._physics_process(0.1)
 	if not check(a.velocity == Vector2.ZERO, "An observer should stop once the latest position is reached"): return
-	print("PASS: retargeting, movement locks, route resume and smooth spectator motion")
+
+	var zhixing: String = game.ZHIXING
+	a.reset_to(floor_id, "R01")
+	b.reset_to(zhixing, "zx2_lib")
+	main._select_floor(game.MAP_IDS.find(zhixing))
+	if not check(main.camera.overview and not a.is_visible_in_tree() and b.is_visible_in_tree(),
+			"The Zhixing overview must only show actors on its own map"): return
+	a.on_stage = false
+	a.on_stage = true
+	if not check(not a.is_visible_in_tree(), "Bringing an actor back onstage must respect the viewed floor"): return
+	a.reset_to(zhixing, "zx2_lib")
+	if not check(a.is_visible_in_tree(), "An actor entering the viewed floor must appear immediately"): return
+	a.reset_to(floor_id, "R01")
+	main.follow_npc(a)
+	main._preview_character(b)
+	main._end_status_preview()
+	if not check(main.current_map == floor_id and main.camera.target == a and a.is_visible_in_tree(),
+			"Ending a cross-floor preview must restore the original camera follow"): return
+	print("PASS: movement, spectator interpolation and floor visibility")
 	quit(0)

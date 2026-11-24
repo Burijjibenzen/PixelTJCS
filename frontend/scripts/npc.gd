@@ -14,14 +14,24 @@ var player_chat_hold := false
 var spectator_target := Vector2.INF
 var position_held := false
 var encounter_wait := ""
-var on_stage := true
+var on_stage := true:
+	set(value):
+		on_stage = value
+		_update_map_visibility()
 var cast_version := 0
 
 var npc_id := ""
 var npc_name := "?"
 var home_map_id := Game.FLOOR3
 var home_room := ""
-var map_id := Game.FLOOR3
+var map_id := Game.FLOOR3:
+	set(value):
+		map_id = value
+		_update_map_visibility()
+var viewed_map_id := "":
+	set(value):
+		viewed_map_id = value
+		_update_map_visibility()
 var goal_map_id := Game.FLOOR3
 var goal_room := ""
 var state: int = S.IDLE
@@ -37,6 +47,9 @@ var _spectator_sample_age := 1.0
 
 @onready var sprite: AnimatedSprite2D = $Sprite
 @onready var label: Label = $NameLabel
+
+func _update_map_visibility() -> void:
+	visible = on_stage and (viewed_map_id.is_empty() or map_id == viewed_map_id)
 
 func setup(id: String, display_name: String, char_id: int, home: String, tint: Color,
 		home_map: String = Game.FLOOR3, sheet_file: String = "") -> void:

@@ -172,5 +172,21 @@ func _check() -> void:
 	press(KEY_E, true)
 	press(KEY_E, false)
 	assert(main.player_avatar.map_id == game.ZHIXING and main.current_map == game.ZHIXING)
+	main._select_floor(game.MAP_IDS.find(game.FLOOR3))
+	assert(main.player_ui.active and not main.player_avatar.sprite.is_visible_in_tree())
+	assert(not main.player_avatar.label.is_visible_in_tree())
+	main._focus_player()
+	assert(main.player_avatar.sprite.is_visible_in_tree() and main.player_avatar.label.is_visible_in_tree())
+
+	var observed = load("res://scripts/player_avatar.gd").new()
+	main.get_node("Actors").add_child(observed)
+	main.observed_player = observed
+	api.backend_online = true
+	main._sync_observed_player({"player_position": {"map_id": game.FLOOR4, "x": 100, "y": 100}}, false)
+	assert(observed.visible and not observed.sprite.is_visible_in_tree())
+	main._select_floor(game.MAP_IDS.find(game.FLOOR4))
+	assert(observed.sprite.is_visible_in_tree() and observed.label.is_visible_in_tree())
+	main._sync_observed_player({"player_position": {"map_id": game.FLOOR3, "x": 100, "y": 100}}, false)
+	assert(not observed.sprite.is_visible_in_tree() and not observed.label.is_visible_in_tree())
 	print("player mode smoke OK")
 	quit()

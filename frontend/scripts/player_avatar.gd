@@ -6,6 +6,7 @@ var map_id := Game.FLOOR3
 var step_delay := 0.0
 var last_walk_msec := -1000
 var sprite: AnimatedSprite2D
+var label: Label
 var label_text := "你"
 var movement := preload("res://scripts/movement_keys.gd").new()
 var idle_animation := "idle_down"
@@ -17,7 +18,7 @@ func _ready() -> void:
 	sprite.position = Vector2(0, -8)
 	add_child(sprite)
 	sprite.play(idle_animation)
-	var label := Label.new()
+	label = Label.new()
 	label.text = label_text
 	label.position = Vector2(-48, -38)
 	label.size.x = 96
@@ -27,6 +28,10 @@ func _ready() -> void:
 	label.add_theme_color_override("font_outline_color", Color.BLACK)
 	label.add_theme_constant_override("outline_size", 3)
 	add_child(label)
+
+func show_on_map(viewed_map_id: String) -> void:
+	sprite.visible = map_id == viewed_map_id
+	label.visible = sprite.visible
 
 func walk(delta: float) -> bool:
 	step_delay = maxf(0.0, step_delay - delta)

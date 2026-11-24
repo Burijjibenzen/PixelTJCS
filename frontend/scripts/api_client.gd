@@ -290,7 +290,6 @@ func _apply_world(data: Dictionary) -> void:
 			if not on_stage and new_epoch:
 				npc.reset_to(info.map_id, info.room_id)
 			npc.on_stage = on_stage
-			npc.visible = on_stage
 			npc.social_busy = false
 			_pending_positions.erase(npc.npc_name)
 			_confirmed_positions.erase(npc.npc_name)

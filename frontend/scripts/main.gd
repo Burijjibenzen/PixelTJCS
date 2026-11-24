@@ -64,7 +64,6 @@ func _ready() -> void:
 
 	print("[Main] 已生成 %d 个 NPC" % npcs.size())
 	$DebugDraw.setup(npcs)
-	_select_floor(0)
 	# M3: 新增独立社交 UI；地图和日程逻辑保持原样。
 	social_ui = load("res://scripts/social_ui.gd").new()
 	social_ui.setup(npcs)
@@ -86,6 +85,7 @@ func _ready() -> void:
 		observed_player.label_text = player_ui.display_name()
 		observed_player.hide()
 		$Actors.add_child(observed_player)
+	_select_floor(0)
 	player_ui.player_avatar = player_avatar
 	player_ui.near_checker = Callable(self, "_near_npc")
 	player_ui.dialogue_changed.connect(_on_dialogue_changed)
@@ -351,6 +351,11 @@ func _show_floor(map_id: String, focus: Vector2) -> void:
 	$DebugDraw.queue_redraw()
 	for floor in $Maps.get_children():
 		floor.visible = floor.name == map_id
+	for npc in npcs:
+		npc.viewed_map_id = map_id
+	player_avatar.show_on_map(map_id)
+	if observed_player:
+		observed_player.show_on_map(map_id)
 	var extent := Vector2(Game.floor_data[map_id].size) * Game.tile_size
 	camera.set_floor(Rect2(Game.map_offset(map_id), extent), focus)
 
@@ -431,6 +436,8 @@ func _sync_observed_player(social: Dictionary, controlling: bool) -> void:
 		observed_player.last_walk_msec = Time.get_ticks_msec()
 	observed_player.map_id = floor_id
 	observed_player.global_position = point
+	if changed_floor:
+		observed_player.show_on_map(current_map)
 	observed_player.show()
 	if changed_floor and camera.target == observed_player:
 		_show_floor(floor_id, point)
@@ -451,7 +458,11 @@ func _capture_view() -> Dictionary:
 
 func _restore_view(view: Dictionary) -> void:
 	var target: Node2D = view.target
-	if not is_instance_valid(target) or not target.is_visible_in_tree():
+	if not is_instance_valid(target):
+		target = null
+	elif target is NPC and not target.on_stage:
+		target = null
+	elif target is PlayerAvatar and not target.visible:
 		target = null
 	var map_id: String = view.map_id
 	var position: Vector2 = view.position

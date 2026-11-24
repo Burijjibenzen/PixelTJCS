@@ -54,7 +54,7 @@ func _draw_regions() -> void:
 
 func _draw() -> void:
 	for npc: NPC in npcs:
-		if npc.map_id != map_id or npc.path_i >= npc.path.size():
+		if not npc.is_visible_in_tree() or npc.map_id != map_id or npc.path_i >= npc.path.size():
 			continue
 		var end := npc.path[npc.path.size() - 1]
 		draw_line(npc.global_position, end, Color(1, 1, 0, 0.6), 3.0)

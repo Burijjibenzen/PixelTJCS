@@ -880,8 +880,9 @@ class DynamicSchedule:
         name,partner=item['npc'],item['partner']
         if item['id'] in self.s.scheduler.event_talks:
             return
-        if name in self.encounter_waits:
+        if name in self.encounter_waits or self.s.player.holds(name):
             return
+        player_talking=self.s.player.holds(partner)
         reservation=self.encounter_waits.get(partner)
         own_reservation=reservation==item['id']
         area=AREAS[self.s.world.area_of(partner)]['id']
@@ -896,7 +897,11 @@ class DynamicSchedule:
         at_point=(point and position and position['area']==area and not position['travelling']
                   and 0<=now-position['at']<=SOCIAL.position_max_age_seconds
                   and math.hypot(position['x']-point['x'],position['y']-point['y'])<=4)
-        stopped=bool(own_reservation and target and target.get('encounter_wait')==reservation)
+        if player_talking and self.s.nearby(name,partner,now):
+            item['encounter_stop']=True
+            self._state(item,'waiting','已到对方身边，等待玩家交谈结束')
+            return
+        stopped=bool(not player_talking and own_reservation and target and target.get('encounter_wait')==reservation)
         if stopped and self.s.nearby(name,partner,now):
             item['encounter_stop']=True
         else:
@@ -920,8 +925,12 @@ class DynamicSchedule:
                     item['interaction_point']=new_point
             if at_point and item['interaction_point']==point and self._within_encounter_range(item,now):
                 self._state(item,'waiting','已到对方附近，等待会面')
+            elif player_talking:
+                self._state(item,'travelling','前往对方附近，等待玩家交谈结束')
             else:
                 self._state(item,'travelling','前往对方所在地，等待实际遇见')
+        if player_talking:
+            return
         item['travel_elapsed']+=max(0,elapsed)
         if item['travel_elapsed']>=ACTIVITY.travel_timeout_seconds:
             self.finish_event_talk(item,'timed_out','未能在期限内联系到对方')
@@ -1059,8 +1068,7 @@ class DynamicSchedule:
                 self._state(item,'waiting','暂挂，等待当前事件结束')
                 continue
             if item['source'] in ('event_followup','whisper') and item['partner']:
-                if not self.s.player.holds(item['partner']):
-                    pursuits[name]=item
+                pursuits[name]=item
                 continue
             if item['meeting_id']:
                 meeting=self.s.meeting(item['meeting_id'])

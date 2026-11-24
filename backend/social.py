@@ -479,6 +479,8 @@ class SocialService(GameService):
             self.conversation_condition.notify_all()
 
     def preempt_conversation(self,name,reason,*,before_speech=False,player_priority=False):
+        if self.player.holds(name) and not player_priority:
+            return False
         for run,(pair,tier,_) in self.cast_duos.items():
             if name not in pair:
                 continue
@@ -498,7 +500,7 @@ class SocialService(GameService):
                 if reverse and reverse['partner']==item['npc'] and reverse['tier']!='high':
                     self.planner.finish_event_talk(reverse,'cancelled',reason,shared_event_id='conversation:'+run)
             return True
-        return not (before_speech or player_priority) and self.player.interrupt(name,reason)
+        return False
 
     def take_player_focus(self, name):
         reason = '玩家发起交谈，暂缓原安排'
@@ -562,8 +564,8 @@ class SocialService(GameService):
             self.emit('world',snapshot=self.world_snapshot())
 
     def available(self,a,b):
-        return self.onstage(a) and self.onstage(b) and not ({a,b}&(
-            self.busy|self.reflecting|self.reading|self.reading_waiting|self.notice_approaching))
+        return self.onstage(a) and self.onstage(b) and not (self.player.holds(a) or self.player.holds(b)) and not (
+            {a,b}&(self.busy|self.reflecting|self.reading|self.reading_waiting|self.notice_approaching))
 
     def perception(self, name):
         """给角色当前处境和可接触对象，按实际位置与上报有效期计算。"""

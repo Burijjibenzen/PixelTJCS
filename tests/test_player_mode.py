@@ -8,9 +8,10 @@ from unittest.mock import patch
 
 import test_social as fixtures
 from backend.player_mode import PlayerError, PlayerMode, PlayerRelationImpact
-from backend.config import NOTICEBOARD, PLAYER, SOCIAL
+from backend.agent_runtime import ConversationConsent, WhisperAction
+from backend.config import ACTIVITY, NOTICEBOARD, PLAYER, SOCIAL
 from backend.noticeboards import BOARDS
-from backend.world import AREAS
+from backend.world import AREAS, J3
 
 
 class PlayerModeTests(unittest.TestCase):
@@ -116,8 +117,6 @@ class PlayerModeTests(unittest.TestCase):
         self.assertEqual('cancelled',event['result']['status'])
 
     def test_whisper_waits_for_player_to_end_active_conversation(self):
-        from backend.agent_runtime import WhisperAction
-
         session=self.join()
         self.s.player.engage(session,self.a)
         speaking,answer=threading.Event(),threading.Event()
@@ -271,6 +270,62 @@ class PlayerModeTests(unittest.TestCase):
         self.assertTrue(self.s.player.holds(self.a))
         self.assertNotIn(self.b, self.s.busy)
         self.assertEqual('waiting', meeting['state'])
+
+    def test_visit_waits_nearby_without_taking_focus_from_the_player(self):
+        session = self.join()
+        player, planner = self.s.player, self.s.planner
+        self.s.report_arrival(self.a, map_id=J3, room_id='R01', x=360, y=488, arrived=True)
+        self.s.report_arrival(self.b, map_id=J3, room_id='R01', x=250, y=488, arrived=False)
+        player.report_position(session, J3, 'R01', 360, 488)
+        player.engage(session, self.a)
+        focus = self.s.game_events.current()[self.a]['id']
+        activity = planner.whisper(self.b, WhisperAction(type='talk_to', npc=self.a))
+
+        planner.tick(time.monotonic(), ACTIVITY.travel_timeout_seconds + 1)
+        self.assertEqual('travelling', activity['state'])
+        self.assertIn('target_position', self.s.world_snapshot()['npcs'][self.b])
+        self.assertEqual(0, activity['travel_elapsed'])
+        self.s.report_arrival(self.b, map_id=J3, room_id='R01', x=342, y=488, arrived=True)
+        planner.tick(time.monotonic(), ACTIVITY.travel_timeout_seconds + 1)
+
+        self.assertEqual('waiting', activity['state'])
+        self.assertTrue(self.s.world_snapshot()['npcs'][self.b]['hold_position'])
+        self.assertEqual(0, activity['travel_elapsed'])
+        self.assertNotIn(self.a, planner.encounter_waits)
+        self.assertFalse(self.s.scheduler.event_talks)
+        self.assertFalse(self.s.preempt_conversation(self.a, '另一名 NPC 请求会面'))
+        self.assertEqual(focus, self.s.game_events.current()[self.a]['id'])
+        self.assertEqual(self.a, player.state(session)['engaged_npc'])
+
+        player.disengage(session)
+        planner.tick(time.monotonic(), 0)
+        self.assertEqual(activity['id'], planner.encounter_waits[self.a])
+        self.s.report_arrival(self.a, map_id=J3, room_id='R01', x=360, y=488,
+                              arrived=False, encounter_wait=activity['id'])
+        with patch.object(self.s.engine.agents[self.a], 'consent_to_event', return_value=ConversationConsent(
+                decision='decline', reason='稍后再聊', reply='我等会儿再来找你。')):
+            with self.s.lock:
+                planner.tick(time.monotonic(), 0)
+            self.s.scheduler.event_talks[activity['id']].result(timeout=5)
+        self.assertEqual('declined', activity['state'])
+
+    def test_scheduled_meeting_resumes_after_player_ends_conversation(self):
+        session = self.join()
+        room = AREAS[self.area]
+        for name in (self.a, self.b):
+            self.s.report_arrival(name, map_id=room['map_id'], room_id=room['room_id'], x=0, y=0, arrived=True)
+        self.s.player.engage(session, self.a)
+        meeting = self.s.request_meeting(self.b, self.a, self.area)
+        scheduler = self.s.scheduler
+        with patch.object(scheduler, 'submit') as submit:
+            scheduler.meetings(time.monotonic(), SOCIAL.meeting_wait_timeout + 1)
+            self.assertEqual('waiting', meeting['state'])
+            self.assertIn('等待玩家', meeting['detail'])
+            submit.assert_not_called()
+
+            self.s.player.disengage(session)
+            scheduler.meetings(time.monotonic(), 0)
+            submit.assert_called_once_with(self.b, self.a, meeting['trigger'], meeting)
 
     def test_full_transcript_in_both_personal_memories_and_only_participants_know(self):
         room = AREAS[self.area]

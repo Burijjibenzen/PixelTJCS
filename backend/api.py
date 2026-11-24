@@ -174,6 +174,7 @@ class PublicNPCProfile(BaseModel):
     traits: list[str] = Field(default_factory=list)
     tone: str = ""
     catchphrase: str = ""
+    gender: str = ""
     goals: PublicGoals
     schedule: list[PublicScheduleEntry] = Field(default_factory=list)
     location: PublicLocation

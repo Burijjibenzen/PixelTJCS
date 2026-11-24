@@ -14,6 +14,7 @@ func press(key: Key, pressed: bool, echo := false, shift := false) -> void:
 func _check() -> void:
 	var game := root.get_node("Game")
 	var api := root.get_node("ApiClient")
+	var clipboard := root.get_node("WebClipboard")
 	api.set_process(false)
 	var scene := load("res://scenes/main.tscn") as PackedScene
 	var main := scene.instantiate()
@@ -90,6 +91,14 @@ func _check() -> void:
 	assert(main.player_ui._near_selected())
 	var input: TextEdit = main.player_ui.message_edit
 	input.grab_focus()
+	input.text = "甲乙丙"
+	input.select(0, 1, 0, 2)
+	assert(clipboard.paste_text("第一行\r\n第二行"))
+	assert(input.text == "甲第一行\n第二行丙")
+	assert(main.player_ui.submitted_text.is_empty())
+	input.release_focus()
+	assert(not clipboard.paste_text("无焦点"))
+	input.grab_focus()
 	input.text = "你好"
 	input.set_caret_column(2)
 	press(KEY_ENTER, true, false, true)
@@ -122,6 +131,30 @@ func _check() -> void:
 	press(KEY_E, false)
 	assert(main.notice_ui.visible and main.notice_ui.board_id == board.id)
 	main.notice_ui.hide()
+
+	var notice = main.notice_ui
+	notice.open_board(board.id, true)
+	notice.content_edit.grab_focus()
+	assert(clipboard.paste_text("招募贴\r\n欢迎加入"))
+	assert(notice.content_edit.text == "招募贴\n欢迎加入")
+	notice.tabs.current_tab = 1
+	await process_frame
+	notice.whisper_edit.grab_focus()
+	assert(clipboard.paste_text("请去图书分馆。"))
+	assert(notice.whisper_edit.text == "请去图书分馆。")
+	assert(notice.content_edit.text == "招募贴\n欢迎加入" and not notice.pending)
+	notice.hide()
+	var single_line := LineEdit.new()
+	main.add_child(single_line)
+	single_line.grab_focus()
+	single_line.text = "甲乙丙"
+	single_line.select(1, 2)
+	assert(clipboard.paste_text("一\n二"))
+	assert(single_line.text == "甲一 二丙" and not single_line.has_selection())
+	single_line.editable = false
+	assert(not clipboard.paste_text("只读"))
+	single_line.release_focus()
+	single_line.queue_free()
 
 	main.player_avatar.global_position = game.world_of(Vector2i(65, 33))
 	press(KEY_LEFT, true)

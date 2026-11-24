@@ -71,7 +71,7 @@ PixelTJCS/
 ├── requirements.txt      # 依赖（5 个包，见 §11.5）
 ├── personas/             # ★ 人格卡目录（10 张 JSON，新增角色在这里加）
 │   ├── chen_juan.json    #   陈卷  博四卷王
-│   ├── lin_momo.json     #   林摸摸 硕三摸鱼
+│   ├── lin_momo.json     #   格林 硕三学生
 │   ├── su_xiaoxin.json   #   苏小新 研一萌新
 │   ├── zichao_xiong.json #   自嘲熊  研一学生
 │   ├── he_kuaixun.json   #   何快讯 研二情报通

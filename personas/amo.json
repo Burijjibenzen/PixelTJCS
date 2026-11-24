@@ -2,6 +2,7 @@
   "name": "阿沫",
   "role": "student",
   "title": "硕士生（研一）· 日本留学生",
+  "gender": "男",
   "expertise": "仿真实验复现、多智能体协作、小型机器人的路径规划与调试",
   "mbti": "ISFJ",
   "traits": [
@@ -36,6 +37,6 @@
   "initial_relations": {
     "钱管": 60,
     "噜噜": 40,
-    "林摸摸": 55
+    "格林": 55
   }
 }

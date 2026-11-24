@@ -18,6 +18,7 @@ config/features=PackedStringArray("4.5", "GL Compatibility")
 
 Game="*res://scripts/game_data.gd"
 ApiClient="*res://scripts/api_client.gd"
+WebClipboard="*res://scripts/web_clipboard.gd"
 
 [display]
 

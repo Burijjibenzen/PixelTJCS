@@ -206,6 +206,9 @@ func _render(data: Dictionary) -> void:
 	title_label.text = _value(data, "title", "连接后端查看完整公开资料")
 	var role := str(data.get("role", ""))
 	role_label.text = {"student": "学生", "advisor": "导师", "staff": "教务"}.get(role, "校园角色")
+	var gender := _value(data, "gender", "")
+	if not gender.is_empty():
+		role_label.text += " · " + gender
 	portrait.texture = null
 	for actor in actors:
 		if actor.npc_name == selected_name:

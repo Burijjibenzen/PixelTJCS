@@ -39,6 +39,8 @@ class PersonaCard:
     secrets: List[str] = field(default_factory=list)  # 秘密：只进本人记忆，可被好友"套话"
     schedule: Dict[str, str] = field(default_factory=dict)  # {"HH:MM": 区域id}
     initial_relations: Dict[str, float] = field(default_factory=dict)  # {角色名: 0-100}
+    background_facts: List[str] = field(default_factory=list)  # 角色原本就知道的背景
+    gender: str = ""  # 角色的公开性别
 
     # ------------------------------------------------------------------
     @classmethod
@@ -61,6 +63,8 @@ class PersonaCard:
             secrets=data.get("secrets", []),
             schedule=data.get("schedule", {}),
             initial_relations=data.get("initial_relations", {}),
+            background_facts=data.get("background_facts") or [],
+            gender=data.get("gender") or "",
         )
         log.info("人格卡加载: %s（%s）", card.name, card.title)
         return card
@@ -69,7 +73,7 @@ class PersonaCard:
     def public_profile(self) -> dict:
         """公开资料白名单；不序列化整张卡，秘密和内部关系配置仅留在服务端。"""
         return {
-            "name": self.name, "role": self.role, "title": self.title,
+            "name": self.name, "role": self.role, "title": self.title, "gender": self.gender,
             "expertise": self.expertise or "", "mbti": self.mbti or "",
             "traits": list(self.traits or []), "tone": self.tone or "",
             "catchphrase": self.catchphrase or "",
@@ -80,15 +84,20 @@ class PersonaCard:
     # ------------------------------------------------------------------
     def render_system_prompt(self) -> str:
         """把人格卡渲染成完整的系统提示词（NPC 每次说话都用它打底）。"""
+        gender = f"\n【性别】{self.gender}" if self.gender else ""
+        background = ""
+        if self.background_facts:
+            facts = "\n".join(f"- {fact}" for fact in self.background_facts)
+            background = f"\n\n【你已知的背景资料】遇到相关话题时，用自己的口吻回应。\n{facts}"
         return f"""你是校园多智能体仿真中的角色「{self.name}」，请完全以第一人称沉浸扮演。
 
-【身份】{self.title}
+【身份】{self.title}{gender}
 【擅长】{self.expertise}
 【性格】{self.mbti}；{ "、".join(self.traits) }
 【说话风格】{self.tone}（口头禅: "{self.catchphrase}"）
 【示例台词】{" / ".join(self.example_lines)}
 【短期目标】{self.goals_short}
-【长期目标】{self.goals_long}
+【长期目标】{self.goals_long}{background}
 
 【行为准则】
 1. 永远保持角色一致性，用第一人称"我"说话，每句话 15~50 字

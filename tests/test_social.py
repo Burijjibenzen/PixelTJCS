@@ -234,7 +234,8 @@ class SocialTests(unittest.TestCase):
             card.secrets.append('PRIVATE_SENTINEL_'+card.name)
             card.internal_note='FUTURE_PRIVATE_FIELD'
         with self.s.database() as db:before=db.execute('SELECT COUNT(*) FROM memories').fetchone()[0]
-        expected={'name','role','title','expertise','mbti','traits','tone','catchphrase','goals','schedule','location','destination','game_time'}
+        expected={'name','role','title','gender','expertise','mbti','traits','tone','catchphrase','goals','schedule','location','destination','game_time'}
+        women={'圣聆初雪','周可可','自嘲熊','温言','钱管'}
         with self.profile_client() as client,patch.object(self.s.llm,'chat',side_effect=AssertionError('must not call model')),patch.object(self.s.llm,'chat_json',side_effect=AssertionError('must not call model')),patch.object(self.s.llm,'embed',side_effect=AssertionError('must not call model')):
             for name,card in self.s.cards.items():
                 response=client.get('/npcs/'+name+'/profile')
@@ -243,6 +244,8 @@ class SocialTests(unittest.TestCase):
                 self.assertEqual(expected,set(data))
                 self.assertTrue(all(0<len(entry['activity'])<=8 for entry in data['schedule']))
                 self.assertEqual(name,data['name'])
+                self.assertEqual('女' if name in women else '男',data['gender'])
+                self.assertIn(f"【性别】{data['gender']}",card.render_system_prompt())
                 for secret in card.secrets:self.assertNotIn(secret,response.text)
                 self.assertNotIn('FUTURE_PRIVATE_FIELD',response.text)
             self.assertEqual(404,client.get('/npcs/不存在的角色/profile').status_code)
@@ -272,6 +275,7 @@ class SocialTests(unittest.TestCase):
         self.s.cards[self.a]=card
         with self.profile_client() as client:
             data=client.get('/npcs/'+self.a+'/profile').json()
+            self.assertEqual('',data['gender'])
             self.assertEqual([],data['traits'])
             self.assertEqual([],data['schedule'])
             self.assertEqual({'short_term':'','long_term':''},data['goals'])
